@@ -123,6 +123,21 @@ class FrameAnalyzer:
             }]
         return []
 
+    def begin_new_epoch(self) -> None:
+        """Reset continuity baselines after an FFmpeg reconnect without clearing totals."""
+        self.keyframes.clear()
+        self.last_pts = None
+        self.last_frame_mono = None
+        self.first_frame_mono = None
+        self.last_keyframe_mono = None
+        self.last_keyframe_pts = None
+        self.last_keyframe_frame_count = None
+        self.last_frame_type = None
+        self.last_frame_is_keyframe = False
+        self.gop_lengths.clear()
+        self.keyframe_pts_intervals.clear()
+        self._gap_active = False
+
 
 def parse_filter_event(line: str) -> dict | None:
     if "freezedetect" in line:

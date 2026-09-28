@@ -23,6 +23,21 @@ def test_pts_regression_is_reported():
     assert events[0]["code"] == "PTS_REGRESSION"
 
 
+def test_new_epoch_ignores_timestamp_reset_after_reconnect():
+    analyzer = FrameAnalyzer()
+    analyzer.feed(frame(0, 100.0, 1, "I"), 1.0)
+    analyzer.feed(frame(1, 100.04), 1.04)
+
+    analyzer.begin_new_epoch()
+    events = analyzer.feed(frame(0, 0.0, 1, "I"), 2.0)
+
+    assert events == []
+    assert analyzer.frame_count == 3
+    assert analyzer.keyframe_count == 2
+    assert analyzer.current_gop_frames == 0
+    assert analyzer.expected_gop_seconds is None
+
+
 def test_ffmpeg_decode_diagnostics_are_structured():
     event = parse_diagnostic_line("[h264 @ 0x123] concealing 12 DC, 12 AC, 12 MV errors in I frame")
     assert event["code"] == "DECODE_ERROR"

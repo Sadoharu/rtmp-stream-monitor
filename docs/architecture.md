@@ -16,6 +16,8 @@ encoder-side SOURCE probe ── RTMP ingest/server ── SERVER_EGRESS_LOCAL �
 
 `LIGHT` runs `ffprobe -show_packets` and reads key packet flags, packet sizes, PTS/DTS, packet arrival and GOP interval without decoding. It cannot identify every codec-specific IDR distinction, detect corrupt decoded pictures, or run freeze/silence filters. In both profiles, an I-frame/key packet is not guaranteed to be an independently decodable IDR for every codec/container.
 
+When FFmpeg reconnects, the agent resets per-connection PTS/DTS and GOP continuity baselines so a source that restarts timestamps at zero does not create a false regression across separate RTMP sessions. Lifetime frame, keyframe, decode-error and reconnect counters remain cumulative.
+
 Deep decode CPU cost depends on codec, resolution, frame rate, and hardware. The agent reports its FFmpeg process CPU and RSS; validate before enabling deep probes at scale. A dedicated second ffprobe process is not run alongside deep mode, avoiding a second full stream reader.
 
 ## Correlation and incident confidence

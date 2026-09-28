@@ -91,6 +91,27 @@ def test_ffmpeg_cpu_sampling_reuses_psutil_process_handle(tmp_path, monkeypatch)
     assert probe.process_rss == 12_345_678
 
 
+def test_connection_reset_clears_stale_timestamp_baselines(tmp_path):
+    config = AgentFileConfig.model_validate({
+        "server": {"url": "http://central.example:8090"},
+        "agent": {"name": "client-test", "token": "test-token", "profile": "LIGHT"},
+        "streams": [{"id": "poland", "url": "rtmp://server.example/live/poland"}],
+        "state_dir": str(tmp_path / "state"),
+        "log_dir": str(tmp_path / "logs"),
+    })
+    probe = StreamProbe(config.streams[0], config, LocalQueue(tmp_path / "queue.db", 1024 * 1024, 100))
+    probe._handle_packet_line("stream_index=0|pts_time=100.000|dts_time=99.960|flags=K|size=100")
+    probe._handle_packet_line("stream_index=0|pts_time=100.040|dts_time=100.000|flags=__|size=100")
+
+    probe._reset_connection_state()
+    probe._handle_packet_line("stream_index=0|pts_time=0.000|dts_time=0.000|flags=K|size=100")
+
+    assert not [event for event in probe.pending_events if event["code"] in {"PTS_JUMP", "DTS_REGRESSION"}]
+    assert probe.stream_metadata["last_media_dts"] == 0.0
+    assert probe.analyzer.keyframe_count == 2
+    assert probe.analyzer.frame_count == 3
+
+
 def test_post_uses_central_receive_timestamp_with_request_uncertainty(tmp_path, monkeypatch):
     config = AgentFileConfig.model_validate({
         "server": {"url": "http://central.example:8090"},

@@ -121,6 +121,7 @@ class StreamProbe:
             delay = min(maximum, delay * 2)
 
     async def _run_one(self) -> None:
+        self._reset_connection_state()
         cmd = self.command()
         LOG.info("Starting %s probe for stream %s", self.config.agent.profile, self.stream.id)
         creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
@@ -215,8 +216,6 @@ class StreamProbe:
             self.active_events.pop("STREAM_STALL", None)
             self.active_events.pop("PROGRESS_STALE", None)
             self.analyzer.frame_count += 1
-            if self.analyzer.first_frame_mono is None:
-                self.analyzer.first_frame_mono = now
             if self.analyzer.first_frame_mono is None:
                 self.analyzer.first_frame_mono = now
             if "K" in fields.get("flags", ""):
@@ -341,6 +340,30 @@ class StreamProbe:
             if prior is not None and value < prior - 0.001:
                 self._event("DTS_REGRESSION", "WARNING", {"stream_index": stream_index, "previous_dts": prior, "dts": value})
             self._dts_by_stream[stream_index] = value
+
+    def _reset_connection_state(self) -> None:
+        """Forget timestamp and media-health baselines that cannot cross reconnects."""
+        self.analyzer.begin_new_epoch()
+        self._dts_by_stream.clear()
+        self.stream_metadata.clear()
+        self.stderr_tail.clear()
+        self.pending_events.clear()
+        self.active_events.clear()
+        self.last_event_mono.clear()
+        self.last_progress_mono = None
+        self.last_packet_mono = None
+        self.last_frame_mono = None
+        self.last_audio_frame_mono = None
+        self.last_video_packet_mono = None
+        self.last_progress.clear()
+        self.last_progress_frame = 0
+        self._reading_input_metadata = False
+        self._video_stream_indices.clear()
+        self._audio_stream_indices.clear()
+        self._packet_bytes.clear()
+        self._process_stats = None
+        self.process_cpu = 0.0
+        self.process_rss = 0
 
     async def _monitor_loop(self) -> None:
         warning = self.config.monitoring.warning_threshold
