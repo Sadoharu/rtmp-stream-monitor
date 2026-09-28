@@ -32,6 +32,7 @@ $logPath = Join-Path $logDir 'rtmp-monitor.jsonl'
 $originalPath = $env:PATH
 
 try {
+    New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
     New-Item -ItemType Directory -Path $testBin -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $env:WINDIR 'System32\where.exe') -Destination (Join-Path $testBin 'ffmpeg.exe')
     Copy-Item -LiteralPath (Join-Path $env:WINDIR 'System32\where.exe') -Destination (Join-Path $testBin 'ffprobe.exe')
