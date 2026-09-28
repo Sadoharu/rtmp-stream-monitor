@@ -91,3 +91,38 @@ def test_batch_correlates_transient_freeze_before_recovery(tmp_path):
         assert incidents[0]["diagnosis"] == "CLIENT_PROBLEM"
         assert incidents[0]["active"] is False
         assert incidents[0]["symptoms"][0]["events"][0]["code"] == "FREEZE_START"
+
+
+def test_recent_delivery_of_old_queue_sample_is_marked_stale(tmp_path):
+    admin_file = tmp_path / "admin.token"
+    app = create_app(CentralFileConfig(
+        database_url=f"sqlite:///{(tmp_path / 'central.db').as_posix()}",
+        admin_token_file=admin_file,
+        agent_offline_seconds=20,
+        stream_offline_seconds=15,
+    ))
+    admin = admin_file.read_text(encoding="utf-8").strip()
+    observed_at = datetime.now(timezone.utc) - timedelta(seconds=60)
+    with TestClient(app) as client:
+        headers = {"Authorization": f"Bearer {admin}"}
+        client.post("/api/v1/streams", headers=headers, json={"id": "demo", "name": "demo"})
+        created_agent = client.post("/api/v1/agents", headers=headers, json={
+            "name": "client-win-demo", "location": "studio", "platform": "Windows",
+            "role": "CLIENT", "stream_id": "demo",
+        })
+        token = created_agent.json()["token"]
+        response = client.post("/api/v1/ingest", headers={"Authorization": f"Bearer {token}"}, json={"items": [{
+            "sample_id": "old-queued-sample",
+            "stream_id": "demo",
+            "observed_at": observed_at.isoformat(),
+            "status": "OK",
+            "metrics": {"last_frame_age": 0.05, "ffmpeg_running": True},
+            "events": [],
+            "context": {},
+        }]})
+        assert response.status_code == 200
+        dashboard = client.get("/api/v1/dashboard", headers=headers).json()
+        agent = next(item for item in dashboard["agents"] if item["name"] == "client-win-demo")
+        assert agent["status"] == "TELEMETRY_STALE"
+        assert agent["last_seen_age_seconds"] < 5
+        assert agent["telemetry_age_seconds"] >= 59

@@ -35,6 +35,8 @@ RTMP over TCP does not expose a frame identity shared by independent decoders. W
 
 Each agent first commits a compact JSON sample to a WAL-enabled, bounded SQLite outbox. Media, network, clock, and agent resource metrics are captured into the sample before it is queued, so replaying a backlog cannot rewrite the observation with newer measurements. A 401 is treated as a configuration fault and remains queued; transient network or server failures retry. The central API uses SQLAlchemy sessions with SQLite by default and is compatible with PostgreSQL URLs. Samples have stable IDs so retries do not create duplicates.
 
+The central dashboard computes agent connectivity from receipt time and stream telemetry freshness from the sample's original observation time. A connected agent replaying an old outbox is therefore shown as `TELEMETRY_STALE` until a recent stream observation arrives.
+
 Raw samples are retained for seven days. At hourly maintenance, complete older one-minute buckets are summarized per agent (numeric avg/min/max/last, worst status, and event counts) before raw rows are deleted. Aggregates are retained for 90 days; incidents for 180 days. Correlation stores up to 60 seconds of nearby samples and recent stderr excerpts per incident.
 
 ## Security boundaries

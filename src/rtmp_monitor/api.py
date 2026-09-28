@@ -93,6 +93,8 @@ def _datetime(value: datetime | None) -> datetime | None:
 def _agent_data(agent: Agent, now: datetime, offline_seconds: int, stream_offline_seconds: int, latest: Telemetry | None) -> dict[str, Any]:
     last_seen = _datetime(agent.last_seen_at)
     age = (now - last_seen).total_seconds() if last_seen else None
+    observed_at = _datetime(latest.observed_at) if latest else None
+    telemetry_age = (now - observed_at).total_seconds() if observed_at else None
     created = _datetime(agent.created_at)
     if (age is None and (now - created).total_seconds() > offline_seconds) or (age is not None and age > offline_seconds):
         state = "AGENT_OFFLINE"
@@ -104,7 +106,9 @@ def _agent_data(agent: Agent, now: datetime, offline_seconds: int, stream_offlin
         if media_age is None:
             media_age = metrics.get("last_audio_frame_age")
         ffmpeg_running = metrics.get("ffmpeg_running")
-        if ffmpeg_running is False:
+        if telemetry_age is not None and telemetry_age > stream_offline_seconds:
+            state = "TELEMETRY_STALE"
+        elif ffmpeg_running is False:
             state = "STREAM_OFFLINE"
         elif isinstance(media_age, (int, float)) and media_age > stream_offline_seconds:
             state = "STREAM_STALLED"
@@ -115,7 +119,10 @@ def _agent_data(agent: Agent, now: datetime, offline_seconds: int, stream_offlin
     return {
         "id": agent.id, "name": agent.name, "location": agent.location, "platform": agent.platform,
         "role": agent.role, "stream_id": agent.stream_id, "last_seen_at": last_seen.isoformat() if last_seen else None,
-        "last_seen_age_seconds": round(age, 1) if age is not None else None, "status": state,
+        "last_seen_age_seconds": round(max(0.0, age), 1) if age is not None else None,
+        "telemetry_observed_at": observed_at.isoformat() if observed_at else None,
+        "telemetry_age_seconds": round(max(0.0, telemetry_age), 1) if telemetry_age is not None else None,
+        "status": state,
         "metrics": latest.metrics if latest else {}, "events": latest.events if latest else [],
     }
 
