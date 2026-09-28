@@ -63,6 +63,25 @@ sudo journalctl -u rtmp-monitor-agent -f
 
 1. Створіть probe у Dashboard і скопіюйте його YAML у `config/agent.yaml` (або передайте інший шлях у параметрі `-ConfigPath`).
 2. Встановіть Python 3.12+ x64 **для всіх користувачів** (у звичайному інсталяторі Python виберіть `Install for all users`). Windows-служба запускається від `LocalSystem`, тому Python із профілю `C:\Users\...` їй недоступний. Інсталятор автоматично шукає машинну інсталяцію в реєстрі Windows та `C:\Program Files`, незалежно від того, який Python обирає `py -3`. Якщо Python розташований в іншій машинно-доступній папці поза профілем користувача, передайте його повний шлях через `-PythonPath`; шлях під `C:\Users\...` буде відхилено. Служба використовує вибраний машинний Python без virtualenv, як рекомендує [pywin32 для Windows Services](https://github.com/mhammond/pywin32#running-as-a-windows-service). Також переконайтеся, що `ffmpeg.exe` і `ffprobe.exe` доступні через PATH. FFmpeg можна встановити через `winget install Gyan.FFmpeg`.
+
+   `py -3.13` може й надалі показувати Python із профілю користувача навіть за наявності окремої машинної інсталяції. Перевірте список інтерпретаторів і машинні шляхи в PowerShell:
+
+   ```powershell
+   py -0p
+   Get-ChildItem "$env:ProgramFiles\Python*" -Directory -ErrorAction SilentlyContinue |
+     ForEach-Object { Join-Path $_.FullName 'python.exe' } |
+     Where-Object { Test-Path $_ }
+   Get-ChildItem 'HKLM:\SOFTWARE\Python\PythonCore' -ErrorAction SilentlyContinue |
+     ForEach-Object {
+       $key = Join-Path $_.PSPath 'InstallPath'
+       if (Test-Path $key) {
+         [pscustomobject]@{ Version = $_.PSChildName; Path = (Get-Item $key).GetValue('') }
+       }
+     }
+   ```
+
+   Машинна інсталяція зазвичай розташована в `C:\Program Files\Python313\python.exe`; шлях із `C:\Users\...\AppData\...` належить профілю користувача. Під час встановлення `install.ps1` друкує версію та повний шлях вибраного Python (`Using Python ... at ...`).
+
 3. Запустіть PowerShell від Administrator:
 
 ```powershell
