@@ -14,7 +14,7 @@ import uuid
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import psutil
 
@@ -31,10 +31,17 @@ def utc_iso() -> str:
 
 
 class StreamProbe:
-    def __init__(self, stream: StreamConfig, config: AgentFileConfig, outbox: LocalQueue):
+    def __init__(
+        self,
+        stream: StreamConfig,
+        config: AgentFileConfig,
+        outbox: LocalQueue,
+        shared_metrics: Callable[[], dict[str, Any]] | None = None,
+    ):
         self.stream = stream
         self.config = config
         self.outbox = outbox
+        self.shared_metrics = shared_metrics
         self.process: asyncio.subprocess.Process | None = None
         self.started_mono = time.monotonic()
         self.last_progress_mono: float | None = None
@@ -399,6 +406,8 @@ class StreamProbe:
             "queue_rows": self.outbox.size,
             "queue_dropped_rows": self.outbox.dropped_rows,
         }
+        if self.shared_metrics:
+            metrics.update(self.shared_metrics())
         persistent = {"FREEZE_START", "SILENCE_START", "KEYFRAME_GAP", "STREAM_STALL", "PROGRESS_STALE", "AUDIO_MISSING"}
         for code in list(self.active_events):
             if code not in persistent and now - self.last_event_mono.get(code, 0) > 30:
@@ -500,18 +509,24 @@ class AgentRunner:
             self.config.network.server_port,
             self.config.network.enabled,
         )
-        self.probes = [StreamProbe(stream, config, self.outbox) for stream in config.streams]
         self._last_network_mono = 0.0
         self._network_snapshot: dict[str, Any] = {}
         self._clock_snapshot: dict[str, Any] = {}
         self._http_offset_ms: float | None = None
+        self._http_offset_updated_mono: float | None = None
         self.started_mono = time.monotonic()
         self.agent_process = psutil.Process()
+        self.agent_process.cpu_percent(interval=None)
+        self._agent_cpu_percent = 0.0
+        self._agent_rss_bytes = 0
+        self._agent_metrics_sampled_at: str | None = None
+        self.probes = [StreamProbe(stream, config, self.outbox, self._shared_metrics) for stream in config.streams]
         self._last_delivery_warning = 0.0
 
     async def run(self) -> None:
         if not self.config.agent.token:
             raise RuntimeError("agent.token is empty; create this agent in the central dashboard and copy its token into config")
+        await self._refresh_environment_metrics()
         tasks = [asyncio.create_task(probe.run(), name=f"probe-{probe.stream.id}") for probe in self.probes]
         try:
             await self._sender_loop()
@@ -525,31 +540,20 @@ class AgentRunner:
         while True:
             now = time.monotonic()
             if now - self._last_network_mono >= self.config.network.ping_interval:
-                try:
-                    self._network_snapshot = await asyncio.to_thread(self.network.sample)
-                    self._clock_snapshot = await asyncio.to_thread(clock_status)
-                    self._last_network_mono = now
-                except Exception:
-                    self._network_snapshot = {"available": False, "reason": "provider error"}
-                    LOG.exception("Network telemetry provider failed")
+                await self._refresh_environment_metrics()
             payloads = self.outbox.peek(100)
             if payloads:
                 items = []
                 ids = []
                 for row_id, payload in payloads:
-                    payload.setdefault("metrics", {})["network"] = self._network_snapshot
-                    payload["metrics"]["clock"] = {**self._clock_snapshot, "central_offset_ms": self._http_offset_ms}
-                    payload["metrics"]["agent_uptime_seconds"] = round(now - self.started_mono, 1)
-                    try:
-                        payload["metrics"]["agent_cpu_percent"] = round(self.agent_process.cpu_percent(interval=None), 2)
-                        payload["metrics"]["agent_rss_bytes"] = self.agent_process.memory_info().rss
-                    except (psutil.Error, OSError):
-                        pass
                     items.append(payload)
                     ids.append(row_id)
                 try:
                     response_data = await asyncio.to_thread(self._post, api_url, {"items": items})
-                    self._http_offset_ms = response_data.get("central_offset_ms", self._http_offset_ms)
+                    central_offset = response_data.get("central_offset_ms")
+                    if isinstance(central_offset, (int, float)):
+                        self._http_offset_ms = float(central_offset)
+                        self._http_offset_updated_mono = time.monotonic()
                     self.outbox.ack(ids)
                 except urllib.error.HTTPError as exc:
                     if now - self._last_delivery_warning >= 30:
@@ -560,6 +564,48 @@ class AgentRunner:
                         LOG.warning("Central server unavailable; %d telemetry records remain queued: %s", self.outbox.size, exc)
                         self._last_delivery_warning = now
             await asyncio.sleep(self.config.monitoring.heartbeat_interval)
+
+    async def _refresh_environment_metrics(self) -> None:
+        try:
+            network_sample = await asyncio.to_thread(self.network.sample)
+            self._network_snapshot = {**network_sample, "sampled_at": utc_iso()}
+        except Exception:
+            self._network_snapshot = {"available": False, "reason": "provider error", "sampled_at": utc_iso()}
+            LOG.exception("Network telemetry provider failed")
+        try:
+            clock_sample = await asyncio.to_thread(clock_status)
+            self._clock_snapshot = {**clock_sample, "sampled_at": utc_iso()}
+        except Exception:
+            self._clock_snapshot = {"ntp_synchronized": None, "estimated_offset_ms": None, "sampled_at": utc_iso()}
+            LOG.exception("Clock telemetry provider failed")
+        try:
+            self._agent_cpu_percent = round(self.agent_process.cpu_percent(interval=None), 2)
+            self._agent_rss_bytes = self.agent_process.memory_info().rss
+        except (psutil.Error, OSError):
+            self._agent_cpu_percent = 0.0
+            self._agent_rss_bytes = 0
+        self._agent_metrics_sampled_at = utc_iso()
+        self._last_network_mono = time.monotonic()
+
+    def _shared_metrics(self) -> dict[str, Any]:
+        now = time.monotonic()
+        offset_age = (
+            round(now - self._http_offset_updated_mono, 1)
+            if self._http_offset_updated_mono is not None
+            else None
+        )
+        return {
+            "network": dict(self._network_snapshot),
+            "clock": {
+                **self._clock_snapshot,
+                "central_offset_ms": self._http_offset_ms,
+                "central_offset_age_seconds": offset_age,
+            },
+            "agent_uptime_seconds": round(now - self.started_mono, 1),
+            "agent_cpu_percent": self._agent_cpu_percent,
+            "agent_rss_bytes": self._agent_rss_bytes,
+            "agent_metrics_sampled_at": self._agent_metrics_sampled_at,
+        }
 
     def _post(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
         request = urllib.request.Request(
