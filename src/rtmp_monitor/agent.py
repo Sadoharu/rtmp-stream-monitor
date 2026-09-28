@@ -545,6 +545,7 @@ class AgentRunner:
         )
         self._last_network_mono = 0.0
         self._network_snapshot: dict[str, Any] = {}
+        self._network_snapshot_mono: float | None = None
         self._clock_snapshot: dict[str, Any] = {}
         self._http_offset_ms: float | None = None
         self._http_offset_uncertainty_ms: float | None = None
@@ -614,6 +615,7 @@ class AgentRunner:
         except Exception:
             self._network_snapshot = {"available": False, "reason": "provider error", "sampled_at": utc_iso()}
             LOG.exception("Network telemetry provider failed")
+        self._network_snapshot_mono = time.monotonic()
         try:
             clock_sample = await asyncio.to_thread(clock_status)
             self._clock_snapshot = {**clock_sample, "sampled_at": utc_iso()}
@@ -631,13 +633,17 @@ class AgentRunner:
 
     def _shared_metrics(self) -> dict[str, Any]:
         now = time.monotonic()
+        network_snapshot = dict(self._network_snapshot)
+        if self._network_snapshot_mono is not None:
+            network_snapshot["sample_age_seconds"] = round(max(0.0, now - self._network_snapshot_mono), 3)
+            network_snapshot["sample_interval_seconds"] = self.config.network.ping_interval
         offset_age = (
             round(now - self._http_offset_updated_mono, 1)
             if self._http_offset_updated_mono is not None
             else None
         )
         return {
-            "network": dict(self._network_snapshot),
+            "network": network_snapshot,
             "clock": {
                 **self._clock_snapshot,
                 "central_offset_ms": self._http_offset_ms,

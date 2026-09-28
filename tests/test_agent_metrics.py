@@ -19,6 +19,7 @@ def test_queued_sample_keeps_network_and_clock_metrics_from_observation_time(tmp
     })
     runner = AgentRunner(config)
     runner._network_snapshot = {"tcp_retransmissions": 7, "sampled_at": "2026-09-28T10:00:00+00:00"}
+    runner._network_snapshot_mono = time.monotonic() - 4.0
     runner._clock_snapshot = {"ntp_synchronized": True, "sampled_at": "2026-09-28T10:00:01+00:00"}
     runner._http_offset_ms = 12.5
     runner._http_offset_uncertainty_ms = 1012.5
@@ -40,6 +41,8 @@ def test_queued_sample_keeps_network_and_clock_metrics_from_observation_time(tmp
 
     assert queued["metrics"]["network"]["tcp_retransmissions"] == 7
     assert queued["metrics"]["network"]["sampled_at"] == "2026-09-28T10:00:00+00:00"
+    assert queued["metrics"]["network"]["sample_age_seconds"] >= 3.9
+    assert queued["metrics"]["network"]["sample_interval_seconds"] == 10.0
     assert queued["metrics"]["clock"]["ntp_synchronized"] is True
     assert queued["metrics"]["clock"]["central_offset_ms"] == 12.5
     assert queued["metrics"]["clock"]["central_offset_uncertainty_ms"] == 1012.5

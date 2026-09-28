@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import platform
 import re
 import subprocess
@@ -7,9 +8,9 @@ import time
 from typing import Any
 
 
-def _run(args: list[str], timeout: float = 2.0) -> str:
+def _run(args: list[str], timeout: float = 2.0, env: dict[str, str] | None = None) -> str:
     try:
-        result = subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
+        result = subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False, env=env)
         return result.stdout + result.stderr
     except (OSError, subprocess.TimeoutExpired):
         return ""
@@ -72,8 +73,15 @@ class NetworkTelemetry:
             if self.previous_system_retransmits is not None:
                 retrans = max(0, current - self.previous_system_retransmits)
             self.previous_system_retransmits = current
-        conn_script = f"Get-NetTCPConnection -RemoteAddress '{self.host}' -RemotePort {self.port} -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty State"
-        state = _run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", conn_script], timeout=3).strip() or "not-established"
+        conn_script = "$hostAddress=$env:RTMP_MONITOR_REMOTE_ADDRESS; $remotePort=[int]$env:RTMP_MONITOR_REMOTE_PORT; Get-NetTCPConnection -RemoteAddress $hostAddress -RemotePort $remotePort -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty State"
+        command_env = os.environ.copy()
+        command_env["RTMP_MONITOR_REMOTE_ADDRESS"] = self.host or ""
+        command_env["RTMP_MONITOR_REMOTE_PORT"] = str(self.port)
+        state = _run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", conn_script],
+            timeout=3,
+            env=command_env,
+        ).strip() or "not-established"
         return {"tcp_retransmissions": retrans, "tcp_state": state, "provider_note": "Windows retransmits are host-wide counter deltas; RTT and packet loss use ICMP"}
 
 

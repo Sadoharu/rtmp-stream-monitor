@@ -77,6 +77,28 @@ def test_windows_retransmits_with_independent_rtt_spike_support_network_fault():
     assert result["diagnosis"] == "NETWORK_PATH_PROBLEM"
 
 
+def test_tcp_state_sample_before_media_recovery_does_not_blame_network():
+    client = report("CLIENT", "client", "WARNING", broken("PTS_REGRESSION", "WARNING"), {
+        "tcp_state": "not-established",
+        "sample_age_seconds": 3.2,
+    })
+    client["metrics"]["last_frame_age"] = 0.1
+    result = diagnose_observations([report("SERVER_EGRESS", "egress"), client])
+
+    assert result["diagnosis"] == "CLIENT_PROBLEM"
+
+
+def test_tcp_not_established_after_last_frame_supports_network_fault():
+    client = report("CLIENT", "client", "CRITICAL", broken("FREEZE_START"), {
+        "tcp_state": "not-established",
+        "sample_age_seconds": 3.2,
+    })
+    client["metrics"]["last_frame_age"] = 6.2
+    result = diagnose_observations([report("SERVER_EGRESS", "egress"), client])
+
+    assert result["diagnosis"] == "NETWORK_PATH_PROBLEM"
+
+
 def test_client_only_media_error_without_network_evidence_points_to_client():
     ingress = report("SERVER_INGRESS", "ingress")
     egress = report("SERVER_EGRESS", "egress")

@@ -35,11 +35,23 @@ def _network_is_bad(observation: dict[str, Any]) -> bool:
         return True
     retransmits = network.get("tcp_retransmissions")
     tcp_state = str(network.get("tcp_state", "")).upper()
+    tcp_state_is_bad = bool(tcp_state and tcp_state not in {"ESTABLISHED", "ESTAB", "UNKNOWN"})
+    sample_age = network.get("sample_age_seconds")
+    frame_age = metrics.get("last_frame_age")
+    if (
+        tcp_state_is_bad
+        and isinstance(sample_age, (int, float))
+        and isinstance(frame_age, (int, float))
+        and frame_age < sample_age
+    ):
+        # Media received after a "not established" sample proves that the
+        # connection came up later; that old state cannot explain a newer event.
+        tcp_state_is_bad = False
     return bool(
         (network.get("provider") != "windows" and isinstance(retransmits, (int, float)) and retransmits > 0)
         or (isinstance(network.get("packet_loss_percent"), (int, float)) and network["packet_loss_percent"] > 0)
         or (isinstance(network.get("rtt_ms"), (int, float)) and network["rtt_ms"] > 100)
-        or (tcp_state and tcp_state not in {"ESTABLISHED", "ESTAB", "UNKNOWN"})
+        or tcp_state_is_bad
     )
 
 
