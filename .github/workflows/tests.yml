@@ -44,6 +44,8 @@ jobs:
           $configPath = Join-Path $configDir 'agent.yaml'
           $logDir = Join-Path $configDir 'logs\windows-ci'
           $stateDir = Join-Path $configDir 'data\windows-ci'
+          $venvDir = Join-Path $env:TEMP 'rtmp-monitor-service-ci\.venv'
+          $venvPython = Join-Path $venvDir 'Scripts\python.exe'
 
           if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
             throw "Unexpected pre-existing $serviceName service on the hosted runner."
@@ -75,9 +77,13 @@ jobs:
           New-Item -ItemType Directory -Force -Path $configDir | Out-Null
           Set-Content -LiteralPath $configPath -Value $testConfig -Encoding utf8
           try {
-            python -m pywin32_postinstall -install
-            if ($LASTEXITCODE -ne 0) { throw 'pywin32 post-install setup failed.' }
-            python -m rtmp_monitor.windows_service_cli --startup auto install
+            python -m venv $venvDir
+            if ($LASTEXITCODE -ne 0) { throw 'Could not create the service test venv.' }
+            & $venvPython -m pip install -e ".[windows-service]"
+            if ($LASTEXITCODE -ne 0) { throw 'Could not install the agent in the service test venv.' }
+            python -m win32.scripts.pywin32_postinstall -install -quiet
+            if ($LASTEXITCODE -ne 0) { throw 'pywin32 machine-wide post-install setup failed.' }
+            & $venvPython -m rtmp_monitor.windows_service_cli --startup auto install
             if ($LASTEXITCODE -ne 0) { throw 'pywin32 service registration failed.' }
 
             Start-Service -Name $serviceName
@@ -111,7 +117,7 @@ jobs:
                   [TimeSpan]::FromSeconds(20)
                 )
               }
-              python -m rtmp_monitor.windows_service_cli remove
+              & $venvPython -m rtmp_monitor.windows_service_cli remove
               if ($LASTEXITCODE -ne 0) { throw 'Windows service cleanup failed.' }
             }
           }

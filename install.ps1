@@ -109,10 +109,12 @@ $allow = [System.Security.AccessControl.AccessControlType]::Allow
 $configAcl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule("SYSTEM","FullControl",$none,$noProp,$allow)))
 $configAcl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule("Administrators","FullControl",$none,$noProp,$allow)))
 Set-Acl -LiteralPath $installedConfig -AclObject $configAcl
+& $pythonExe -m pip install --upgrade "pywin32>=306"
+if ($LASTEXITCODE -ne 0) { throw "Failed to install pywin32 into the machine-wide Python environment." }
+& $pythonExe -m win32.scripts.pywin32_postinstall -install -quiet
+if ($LASTEXITCODE -ne 0) { throw "pywin32 machine-wide post-install setup failed." }
 & $venvPython -m pip install "pywin32>=306"
-if ($LASTEXITCODE -ne 0) { throw "Failed to install pywin32." }
-& $venvPython -m pywin32_postinstall -install
-if ($LASTEXITCODE -ne 0) { throw "pywin32 post-install setup failed." }
+if ($LASTEXITCODE -ne 0) { throw "Failed to install pywin32 in the agent virtual environment." }
 & $venvPython -m rtmp_monitor.windows_service_cli --startup auto install
 if ($LASTEXITCODE -ne 0) { throw "Failed to install the RtmpMonitorAgent Windows service." }
 Start-Service -Name RtmpMonitorAgent
