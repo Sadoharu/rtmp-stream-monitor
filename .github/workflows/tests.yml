@@ -36,6 +36,10 @@ jobs:
         run: python -m pip install -e ".[test,windows-service]"
       - name: Run test suite
         run: python -m pytest
+      - name: Test Windows Python discovery
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\tests\test_windows_python_discovery.ps1
       - name: Smoke test Windows service lifecycle
         if: runner.os == 'Windows'
         shell: pwsh

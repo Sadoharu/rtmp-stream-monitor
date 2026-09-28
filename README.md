@@ -60,7 +60,7 @@ sudo journalctl -u rtmp-monitor-agent -f
 ## Встановлення Windows probe
 
 1. Створіть probe у Dashboard і скопіюйте його YAML у `config/agent.yaml` (або передайте інший шлях у параметрі `-ConfigPath`).
-2. Встановіть Python 3.12+ x64 **для всіх користувачів** (у звичайному інсталяторі Python виберіть `Install for all users`). Windows-служба запускається від `LocalSystem`, тому Python із профілю `C:\Users\...` їй недоступний. Інсталятор автоматично шукає машинну інсталяцію в реєстрі Windows та `C:\Program Files`, незалежно від того, який Python обирає `py -3`. Для Python у власній папці передайте повний шлях параметром `-PythonPath`. Служба використовує вибраний машинний Python без virtualenv, як рекомендує [pywin32 для Windows Services](https://github.com/mhammond/pywin32#running-as-a-windows-service). Також переконайтеся, що `ffmpeg.exe` і `ffprobe.exe` доступні через PATH. FFmpeg можна встановити через `winget install Gyan.FFmpeg`.
+2. Встановіть Python 3.12+ x64 **для всіх користувачів** (у звичайному інсталяторі Python виберіть `Install for all users`). Windows-служба запускається від `LocalSystem`, тому Python із профілю `C:\Users\...` їй недоступний. Інсталятор автоматично шукає машинну інсталяцію в реєстрі Windows та `C:\Program Files`, незалежно від того, який Python обирає `py -3`. Якщо Python розташований в іншій машинно-доступній папці поза профілем користувача, передайте його повний шлях через `-PythonPath`; шлях під `C:\Users\...` буде відхилено. Служба використовує вибраний машинний Python без virtualenv, як рекомендує [pywin32 для Windows Services](https://github.com/mhammond/pywin32#running-as-a-windows-service). Також переконайтеся, що `ffmpeg.exe` і `ffprobe.exe` доступні через PATH. FFmpeg можна встановити через `winget install Gyan.FFmpeg`.
 3. Запустіть PowerShell від Administrator:
 
 ```powershell
@@ -158,6 +158,14 @@ rtmp-monitor server --config config/central.dev.yaml
 ```
 
 Перевірки classifier симулюють source, restream, network-path та client-only failures. Live acceptance test треба виконати на тих Ubuntu/Windows hosts і через той самий RTMP шлях, де система працюватиме цілодобово.
+
+Windows installer discovery regression test:
+
+```powershell
+.\tests\test_windows_python_discovery.ps1
+```
+
+Він перевіряє знаходження Python через реєстр і `Program Files`, а також блокує інтерпретатор із user profile для Windows-служби.
 
 Щоб перевірити активний RTMP URL через локальний тимчасовий central collector і один deep probe:
 
