@@ -101,6 +101,20 @@ jobs:
             & sc.exe qc $serviceName
             & reg.exe query "HKLM\SYSTEM\CurrentControlSet\Services\$serviceName" /v ImagePath
             & reg.exe query "HKLM\SYSTEM\CurrentControlSet\Services\$serviceName\PythonClass" /ve
+            $serviceHost = Join-Path $venvDir 'pythonservice.exe'
+            $debugOut = Join-Path $env:TEMP 'rtmp-service-debug.stdout'
+            $debugErr = Join-Path $env:TEMP 'rtmp-service-debug.stderr'
+            try {
+              $debugProcess = Start-Process -FilePath $serviceHost -ArgumentList @('-debug', $serviceName) -PassThru -WindowStyle Hidden -RedirectStandardOutput $debugOut -RedirectStandardError $debugErr
+              if (-not $debugProcess.WaitForExit(5000)) {
+                & taskkill.exe /PID $debugProcess.Id /T /F | Out-Null
+                $debugProcess.WaitForExit()
+              }
+              if (Test-Path -LiteralPath $debugOut) { Get-Content -LiteralPath $debugOut -Tail 100 }
+              if (Test-Path -LiteralPath $debugErr) { Get-Content -LiteralPath $debugErr -Tail 100 }
+            } catch {
+              Write-Host "pythonservice debug launch failed: $($_.Exception.Message)"
+            }
 
             Start-Service -Name $serviceName
             $deadline = (Get-Date).AddSeconds(20)
