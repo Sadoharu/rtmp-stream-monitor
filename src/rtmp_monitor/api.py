@@ -257,6 +257,9 @@ def create_app(config: CentralFileConfig | None = None, database_url: str | None
             raise HTTPException(status_code=403, detail="Telemetry stream does not match the registered agent")
         received_at = utcnow()
         inserted = 0
+        correlation_times: set[datetime] = set()
+        latest_observed_at: datetime | None = None
+        inserted_samples: list[tuple[datetime, str, bool]] = []
         for item in batch.items:
             if session.get(Telemetry, item.sample_id):
                 continue
@@ -265,6 +268,8 @@ def create_app(config: CentralFileConfig | None = None, database_url: str | None
                 observed_at = observed_at.replace(tzinfo=timezone.utc)
             else:
                 observed_at = observed_at.astimezone(timezone.utc)
+            latest_observed_at = max(latest_observed_at, observed_at) if latest_observed_at else observed_at
+            inserted_samples.append((observed_at, item.status.upper(), bool(item.events)))
             session.add(Telemetry(
                 id=item.sample_id, agent_id=agent.id, stream_id=item.stream_id,
                 observed_at=observed_at, received_at=received_at, status=item.status.upper(),
@@ -273,7 +278,25 @@ def create_app(config: CentralFileConfig | None = None, database_url: str | None
             inserted += 1
         agent.last_seen_at = received_at
         session.flush()
-        correlate_stream(session, agent.stream_id, received_at, media_tolerance_seconds=config.media_timestamp_tolerance_seconds)
+        if inserted_samples:
+            first_observation = min(sample[0] for sample in inserted_samples)
+            previous_status = session.scalar(
+                select(Telemetry.status)
+                .where(Telemetry.agent_id == agent.id, Telemetry.observed_at < first_observation)
+                .order_by(Telemetry.observed_at.desc())
+                .limit(1)
+            )
+            bad_statuses = {"WARNING", "CRITICAL", "ERROR"}
+            for observed_at, status, has_events in sorted(inserted_samples, key=lambda sample: sample[0]):
+                status_changed = status != previous_status
+                entered_bad_state = previous_status is None and status in bad_statuses
+                if has_events or status_changed and previous_status is not None or entered_bad_state:
+                    correlation_times.add(observed_at)
+                previous_status = status
+        if latest_observed_at is not None:
+            correlation_times.add(latest_observed_at)
+        for observed_at in sorted(correlation_times):
+            correlate_stream(session, agent.stream_id, observed_at, media_tolerance_seconds=config.media_timestamp_tolerance_seconds)
         session.commit()
         return {"accepted": inserted, "received_at": received_at.isoformat()}
 

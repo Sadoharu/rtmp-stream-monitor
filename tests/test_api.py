@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
@@ -46,3 +46,48 @@ def test_authenticated_ingest_is_idempotent_and_correlated(tmp_path):
         assert incidents[0]["diagnosis"] == "NETWORK_PATH_PROBLEM"
         telemetry = client.get("/api/v1/telemetry?stream_id=demo", headers=headers).json()
         assert len(telemetry) == 1
+
+
+def test_batch_correlates_transient_freeze_before_recovery(tmp_path):
+    admin_file = tmp_path / "admin.token"
+    app = create_app(CentralFileConfig(
+        database_url=f"sqlite:///{(tmp_path / 'central.db').as_posix()}",
+        admin_token_file=admin_file,
+    ))
+    admin = admin_file.read_text(encoding="utf-8").strip()
+    now = datetime.now(timezone.utc)
+    with TestClient(app) as client:
+        headers = {"Authorization": f"Bearer {admin}"}
+        assert client.post("/api/v1/streams", headers=headers, json={"id": "demo", "name": "demo"}).status_code == 201
+        created_agent = client.post("/api/v1/agents", headers=headers, json={
+            "name": "client-win-demo", "location": "studio", "platform": "Windows",
+            "role": "CLIENT", "stream_id": "demo",
+        })
+        token = created_agent.json()["token"]
+        samples = [
+            {
+                "sample_id": "freeze-start",
+                "stream_id": "demo",
+                "observed_at": (now - timedelta(seconds=2)).isoformat(),
+                "status": "WARNING",
+                "metrics": {},
+                "events": [{"code": "FREEZE_START", "severity": "WARNING", "details": {"value": 12.0}}],
+                "context": {},
+            },
+            {
+                "sample_id": "freeze-end",
+                "stream_id": "demo",
+                "observed_at": (now - timedelta(seconds=1)).isoformat(),
+                "status": "OK",
+                "metrics": {},
+                "events": [{"code": "FREEZE_END", "severity": "INFO", "details": {"value": 14.1}}],
+                "context": {},
+            },
+        ]
+        response = client.post("/api/v1/ingest", headers={"Authorization": f"Bearer {token}"}, json={"items": samples})
+        assert response.status_code == 200
+        incidents = client.get("/api/v1/incidents", headers=headers).json()
+        assert len(incidents) == 1
+        assert incidents[0]["diagnosis"] == "CLIENT_PROBLEM"
+        assert incidents[0]["active"] is False
+        assert incidents[0]["symptoms"][0]["events"][0]["code"] == "FREEZE_START"

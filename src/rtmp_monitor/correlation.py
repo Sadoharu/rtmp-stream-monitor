@@ -133,12 +133,15 @@ def diagnose_observations(observations: list[dict[str, Any]], media_tolerance_se
 
 
 def correlate_stream(session: Session, stream_id: str, now: datetime | None = None, window_seconds: int = 20, media_tolerance_seconds: float = 5.0) -> Incident | None:
+    # Ingest can evaluate several historical samples in one transaction. Flush
+    # the prior snapshot's incident changes so the next snapshot sees them.
+    session.flush()
     now = now or utcnow()
     cutoff = now - timedelta(seconds=window_seconds)
     rows = session.execute(
         select(Telemetry, Agent)
         .join(Agent, Telemetry.agent_id == Agent.id)
-        .where(Telemetry.stream_id == stream_id, Telemetry.observed_at >= cutoff)
+        .where(Telemetry.stream_id == stream_id, Telemetry.observed_at >= cutoff, Telemetry.observed_at <= now)
         .order_by(Telemetry.observed_at.desc())
     ).all()
     latest_by_agent: dict[str, tuple[Telemetry, Agent]] = {}
