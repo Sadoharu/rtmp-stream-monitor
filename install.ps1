@@ -74,7 +74,13 @@ if (Get-Service -Name RtmpMonitorAgent -ErrorAction SilentlyContinue) {
         if ($LASTEXITCODE -ne 0) { throw "Could not remove the previous RtmpMonitorAgent service." }
     }
 }
-Copy-Item -Recurse -Force (Join-Path $repo "src") (Join-Path $programDir "src")
+$sourceDir = Join-Path $repo "src"
+$installedSourceDir = Join-Path $programDir "src"
+$stagedSourceDir = Join-Path $programDir ".src-staging"
+if (Test-Path -LiteralPath $stagedSourceDir) { Remove-Item -LiteralPath $stagedSourceDir -Recurse -Force }
+Copy-Item -Recurse -Force $sourceDir $stagedSourceDir
+if (Test-Path -LiteralPath $installedSourceDir) { Remove-Item -LiteralPath $installedSourceDir -Recurse -Force }
+Move-Item -LiteralPath $stagedSourceDir -Destination $installedSourceDir
 Copy-Item -Force (Join-Path $repo "pyproject.toml") $programDir
 & $pythonExe -m venv --clear $venv
 if ($LASTEXITCODE -ne 0) { throw "Failed to create the Python virtual environment." }
