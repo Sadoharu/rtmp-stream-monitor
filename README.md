@@ -70,6 +70,8 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 Installer створює Windows Service `RtmpMonitorAgent` з automatic startup. Перевірити стан можна через `Get-Service RtmpMonitorAgent`; структуровані логи зберігаються в `%ProgramData%\RtmpMonitor\logs`.
 
+При оновленні інсталятор зберігає наявний `%ProgramData%\RtmpMonitor\agent.yaml`. Щоб замінити його новим Dashboard YAML, запустіть `.\install.ps1 -ConfigPath .\config\agent.yaml -ReplaceConfig`.
+
 ## Додавання stream та probe
 
 У stream зберігаються три окремі URL: `source_url` (за наявності), `local_url` для сервера та `public_url` для клієнтів. Не підміняйте `source_url` loopback адресою сервера. Для кожної комбінації `agent + stream` створюйте окремий probe й окремий токен. Клієнтів можна додавати скільки потрібно.
@@ -129,7 +131,7 @@ sudo tail -f /var/log/rtmp-monitor-agent/ffmpeg-stderr.jsonl
 
 ## Оновлення
 
-Збережіть `/etc/rtmp-monitor/central.yaml` або agent YAML, оновіть checkout, потім знову запустіть потрібний installer. Installer оновлює пакет і службу, але не перезаписує наявний YAML. Переконайтеся, що відома резервна копія SQLite перед великим оновленням.
+Збережіть конфігурації, оновіть checkout, потім знову запустіть потрібний installer. Central installer зберігає наявний `/etc/rtmp-monitor/central.yaml`. Windows installer зберігає встановлений agent YAML, якщо не задано `-ReplaceConfig`; Linux agent installer копіює YAML із шляху, переданого в команді. Переконайтеся, що відома резервна копія SQLite перед великим оновленням.
 
 ## Видалення
 

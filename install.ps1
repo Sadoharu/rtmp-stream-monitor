@@ -1,12 +1,14 @@
 param(
     [string]$ConfigPath = ".\config\agent.yaml",
-    [string]$PythonPath = ""
+    [string]$PythonPath = "",
+    [switch]$ReplaceConfig
 )
 $ErrorActionPreference = "Stop"
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw "Run PowerShell as Administrator and retry .\install.ps1" }
+$configPathWasExplicit = $PSBoundParameters.ContainsKey("ConfigPath")
 $resolvedConfig = Resolve-Path -LiteralPath $ConfigPath -ErrorAction SilentlyContinue
-if (-not $resolvedConfig) { throw "Agent config not found at $ConfigPath. Copy the dashboard generated YAML there first." }
+if (($configPathWasExplicit -or $ReplaceConfig) -and -not $resolvedConfig) { throw "Agent config not found at $ConfigPath." }
 if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { throw "FFmpeg is required. Install it with winget (winget install Gyan.FFmpeg) or add ffmpeg.exe to PATH, then retry." }
 if (-not (Get-Command ffprobe -ErrorAction SilentlyContinue)) { throw "ffprobe is required and normally ships with FFmpeg. Add it to PATH, then retry." }
 $pythonExe = ""
@@ -66,6 +68,9 @@ New-Item -ItemType Directory -Force -Path $programDir,$configDir,$logDir,(Join-P
 $venv = Join-Path $programDir ".venv"
 $venvPython = Join-Path $venv "Scripts\python.exe"
 $installedConfig = Join-Path $dataDir "agent.yaml"
+$installedConfigExists = Test-Path -LiteralPath $installedConfig
+if (-not $installedConfigExists -and -not $resolvedConfig) { throw "Agent config not found at $ConfigPath. Provide the Dashboard-generated YAML with -ConfigPath for the first installation." }
+if ($ReplaceConfig -and -not $resolvedConfig) { throw "-ReplaceConfig requires a valid -ConfigPath." }
 $env:RTMP_MONITOR_CONFIG = $installedConfig
 if (Get-Service -Name RtmpMonitorAgent -ErrorAction SilentlyContinue) {
     Stop-Service -Name RtmpMonitorAgent -Force -ErrorAction SilentlyContinue
@@ -88,7 +93,11 @@ if ($LASTEXITCODE -ne 0) { throw "Failed to create the Python virtual environmen
 if ($LASTEXITCODE -ne 0) { throw "Failed to upgrade pip in the virtual environment." }
 & $venvPython -m pip install $programDir
 if ($LASTEXITCODE -ne 0) { throw "Failed to install RTMP Monitor in the virtual environment." }
-Copy-Item -Force $resolvedConfig.Path $installedConfig
+if (-not $installedConfigExists -or $ReplaceConfig) {
+    Copy-Item -Force $resolvedConfig.Path $installedConfig
+} elseif ($resolvedConfig) {
+    Write-Host "Preserving existing agent config. Use -ReplaceConfig to install the YAML from $ConfigPath."
+}
 $configAcl = New-Object System.Security.AccessControl.FileSecurity
 $configAcl.SetAccessRuleProtection($true, $false)
 $none = [System.Security.AccessControl.InheritanceFlags]::None
