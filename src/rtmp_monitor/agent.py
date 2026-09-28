@@ -139,15 +139,26 @@ class StreamProbe:
         readers = [asyncio.create_task(self._read_stdout()), asyncio.create_task(self._read_stderr())]
         wait_task = asyncio.create_task(self.process.wait())
         monitor_task = asyncio.create_task(self._monitor_loop())
-        done, pending = await asyncio.wait([wait_task], return_when=asyncio.FIRST_COMPLETED)
-        _ = done
-        self.last_restart_reason = f"monitor subprocess exited with code {self.process.returncode}"
-        if self.process.returncode not in (0, None):
-            self._event("FFMPEG_EXIT", "CRITICAL", {"return_code": self.process.returncode, "stderr_tail": list(self.stderr_tail)[-20:]})
-        monitor_task.cancel()
-        for task in readers:
-            _ = task
-        await asyncio.gather(monitor_task, *readers, return_exceptions=True)
+        cancelled = False
+        try:
+            await asyncio.wait([wait_task], return_when=asyncio.FIRST_COMPLETED)
+            self.last_restart_reason = f"monitor subprocess exited with code {self.process.returncode}"
+            if self.process.returncode not in (0, None):
+                self._event("FFMPEG_EXIT", "CRITICAL", {"return_code": self.process.returncode, "stderr_tail": list(self.stderr_tail)[-20:]})
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        finally:
+            monitor_task.cancel()
+            if self.process and self.process.returncode is None:
+                await self._stop_process()
+            if cancelled:
+                try:
+                    await asyncio.wait_for(asyncio.gather(*readers, return_exceptions=True), timeout=2)
+                except asyncio.TimeoutError:
+                    for task in readers:
+                        task.cancel()
+            await asyncio.gather(wait_task, monitor_task, *readers, return_exceptions=True)
 
     async def _read_stdout(self) -> None:
         assert self.process and self.process.stdout

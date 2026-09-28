@@ -19,3 +19,14 @@ def test_queue_byte_limit_counts_utf8_bytes(tmp_path):
     queue.put({"x": "é" * 10})
     assert queue.size == 0
     assert queue.dropped_rows == 1
+
+
+def test_queue_closes_database_file_after_each_operation(tmp_path):
+    queue = LocalQueue(tmp_path / "queue.db", max_bytes=1024 * 1024, max_rows=100)
+    queue.put({"message": "hello"})
+    batch = queue.peek()
+    assert batch[0][1] == {"message": "hello"}
+    queue.ack([batch[0][0]])
+    assert queue.size == 0
+
+    queue.path.rename(tmp_path / "queue-renamed.db")
