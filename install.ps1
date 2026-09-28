@@ -1,5 +1,6 @@
 param(
-    [string]$ConfigPath = ".\config\agent.yaml"
+    [string]$ConfigPath = ".\config\agent.yaml",
+    [string]$PythonPath = ""
 )
 $ErrorActionPreference = "Stop"
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
@@ -8,14 +9,22 @@ $resolvedConfig = Resolve-Path -LiteralPath $ConfigPath -ErrorAction SilentlyCon
 if (-not $resolvedConfig) { throw "Agent config not found at $ConfigPath. Copy the dashboard generated YAML there first." }
 if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { throw "FFmpeg is required. Install it with winget (winget install Gyan.FFmpeg) or add ffmpeg.exe to PATH, then retry." }
 if (-not (Get-Command ffprobe -ErrorAction SilentlyContinue)) { throw "ffprobe is required and normally ships with FFmpeg. Add it to PATH, then retry." }
-$py = Get-Command py -ErrorAction SilentlyContinue
-if (-not $py) { throw "Python 3.12 is required. Install Python 3.12 and the Python Launcher, then retry." }
-$pythonVersion = & py -3.12 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>&1
-if ($LASTEXITCODE -ne 0 -or [version]$pythonVersion -lt [version]"3.12") { throw "Python 3.12 was not found. Install Python 3.12 for all users and retry." }
-$pythonExe = (& py -3.12 -c "import sys; print(sys.executable)").Trim()
+$pythonExe = ""
+if ($PythonPath) {
+    $resolvedPython = Resolve-Path -LiteralPath $PythonPath -ErrorAction SilentlyContinue
+    if (-not $resolvedPython) { throw "Python executable not found at $PythonPath." }
+    $pythonExe = $resolvedPython.Path
+} else {
+    $py = Get-Command py -ErrorAction SilentlyContinue
+    if (-not $py) { throw "Python 3.12+ is required. Install Python and the Python Launcher, then retry." }
+    $pythonExe = (& py -3 -c "import sys; print(sys.executable)").Trim()
+    if ($LASTEXITCODE -ne 0) { throw "Python 3.12+ was not found. Install it and retry." }
+}
+$pythonVersion = (& $pythonExe -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>&1).Trim()
+if ($LASTEXITCODE -ne 0 -or [version]$pythonVersion -lt [version]"3.12") { throw "Python 3.12+ was not found at $pythonExe." }
 $userProfilePrefix = [System.IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\') + '\'
 if ([System.IO.Path]::GetFullPath($pythonExe).StartsWith($userProfilePrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-    throw "Python 3.12 is installed only for the current user at $pythonExe. Install Python 3.12 for all users; the Windows service runs as LocalSystem and cannot reliably use a user-profile Python installation."
+    throw "Python is installed only for the current user at $pythonExe. Install Python 3.12+ for all users, or pass its machine-wide executable path with -PythonPath. The Windows service runs as LocalSystem and cannot reliably use a user-profile Python installation."
 }
 $repo = Split-Path -Parent $MyInvocation.MyCommand.Path
 $programDir = Join-Path $env:ProgramFiles "RTMPMonitor"
@@ -36,8 +45,8 @@ if (Get-Service -Name RtmpMonitorAgent -ErrorAction SilentlyContinue) {
 }
 Copy-Item -Recurse -Force (Join-Path $repo "src") (Join-Path $programDir "src")
 Copy-Item -Force (Join-Path $repo "pyproject.toml") $programDir
-& py -3.12 -m venv --clear $venv
-if ($LASTEXITCODE -ne 0) { throw "Failed to create the Python 3.12 virtual environment." }
+& $pythonExe -m venv --clear $venv
+if ($LASTEXITCODE -ne 0) { throw "Failed to create the Python virtual environment." }
 & $venvPython -m pip install --upgrade pip
 if ($LASTEXITCODE -ne 0) { throw "Failed to upgrade pip in the virtual environment." }
 & $venvPython -m pip install $programDir
