@@ -58,7 +58,7 @@ sudo journalctl -u rtmp-monitor-agent -f
 ## Встановлення Windows probe
 
 1. Створіть probe у Dashboard і скопіюйте його YAML у `config/agent.yaml` (або передайте інший шлях у параметрі `-ConfigPath`).
-2. Встановіть Python 3.12+ x64 **для всіх користувачів** (у звичайному інсталяторі Python виберіть `Install for all users`). Windows-служба запускається від `LocalSystem`, тому Python із профілю `C:\Users\...` їй недоступний. Якщо `py -3` обирає саме таку Python-інсталяцію, передайте шлях до загальносистемного `python.exe` параметром `-PythonPath`. Також переконайтеся, що `ffmpeg.exe` і `ffprobe.exe` доступні через PATH. FFmpeg можна встановити через `winget install Gyan.FFmpeg`.
+2. Встановіть Python 3.12+ x64 **для всіх користувачів** (у звичайному інсталяторі Python виберіть `Install for all users`). Windows-служба запускається від `LocalSystem`, тому Python із профілю `C:\Users\...` їй недоступний. Інсталятор автоматично шукає машинну інсталяцію в реєстрі Windows та `C:\Program Files`, незалежно від того, який Python обирає `py -3`. Для Python у власній папці передайте повний шлях параметром `-PythonPath`. Також переконайтеся, що `ffmpeg.exe` і `ffprobe.exe` доступні через PATH. FFmpeg можна встановити через `winget install Gyan.FFmpeg`.
 3. Запустіть PowerShell від Administrator:
 
 ```powershell
