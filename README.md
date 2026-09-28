@@ -145,7 +145,7 @@ sudo systemctl daemon-reload
 
 Для агента використайте `rtmp-monitor-agent.service`. Видалення `/var/lib/rtmp-monitor` або `/var/lib/rtmp-monitor-agent` знищує базу/чергу та потребує окремого підтвердження адміністратора.
 
-Щоб прибрати центральний код і конфігурацію після зупинки служби, виконайте `sudo rm -rf /opt/rtmp-monitor /etc/rtmp-monitor`; для probe використайте `/opt/rtmp-monitor-agent /etc/rtmp-monitor-agent`. Щоб також видалити дані, окремо перевірте та видаліть відповідний `/var/lib/rtmp-monitor*` каталог і логи. На Windows видаліть service з elevated PowerShell командою `& "$env:ProgramFiles\RTMPMonitor\.venv\Scripts\python.exe" -m rtmp_monitor.windows_service remove`, потім видаліть `C:\Program Files\RTMPMonitor` і за потреби окремо `C:\ProgramData\RtmpMonitor`.
+Щоб прибрати центральний код і конфігурацію після зупинки служби, виконайте `sudo rm -rf /opt/rtmp-monitor /etc/rtmp-monitor`; для probe використайте `/opt/rtmp-monitor-agent /etc/rtmp-monitor-agent`. Щоб також видалити дані, окремо перевірте та видаліть відповідний `/var/lib/rtmp-monitor*` каталог і логи. На Windows видаліть service з elevated PowerShell командою `& "$env:ProgramFiles\RTMPMonitor\.venv\Scripts\python.exe" -m rtmp_monitor.windows_service_cli remove`, потім видаліть `C:\Program Files\RTMPMonitor` і за потреби окремо `C:\ProgramData\RtmpMonitor`.
 
 ## Розробка та перевірки
 

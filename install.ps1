@@ -75,6 +75,9 @@ $env:RTMP_MONITOR_CONFIG = $installedConfig
 if (Get-Service -Name RtmpMonitorAgent -ErrorAction SilentlyContinue) {
     Stop-Service -Name RtmpMonitorAgent -Force -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $venvPython) {
+        # Use the legacy-compatible module here because the existing venv may
+        # predate windows_service_cli. The class is registered with a stable
+        # package path in both entry points.
         & $venvPython -m rtmp_monitor.windows_service remove
         if ($LASTEXITCODE -ne 0) { throw "Could not remove the previous RtmpMonitorAgent service." }
     }
@@ -110,7 +113,7 @@ Set-Acl -LiteralPath $installedConfig -AclObject $configAcl
 if ($LASTEXITCODE -ne 0) { throw "Failed to install pywin32." }
 & $venvPython -m pywin32_postinstall -install
 if ($LASTEXITCODE -ne 0) { throw "pywin32 post-install setup failed." }
-& $venvPython -m rtmp_monitor.windows_service --startup auto install
+& $venvPython -m rtmp_monitor.windows_service_cli --startup auto install
 if ($LASTEXITCODE -ne 0) { throw "Failed to install the RtmpMonitorAgent Windows service." }
 Start-Service -Name RtmpMonitorAgent
 Write-Host "RTMP Monitor Agent service installed and started. Logs: $logDir"

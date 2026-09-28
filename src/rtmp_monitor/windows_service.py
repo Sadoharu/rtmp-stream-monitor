@@ -60,4 +60,9 @@ class RtmpMonitorAgentService(win32serviceutil.ServiceFramework):
 
 
 if __name__ == "__main__":
-    win32serviceutil.HandleCommandLine(RtmpMonitorAgentService)
+    # Keep the legacy module command usable without registering __main__ as the
+    # service module. pythonservice must import the stable package path below.
+    win32serviceutil.HandleCommandLine(
+        RtmpMonitorAgentService,
+        serviceClassString="rtmp_monitor.windows_service.RtmpMonitorAgentService",
+    )
