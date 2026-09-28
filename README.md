@@ -36,6 +36,17 @@ sudo -u rtmp-monitor /opt/rtmp-monitor/.venv/bin/rtmp-monitor show-admin-token -
 
 У Dashboard виберіть **Add stream**. Для `demo` уже підставлені local та remote URL; відредагуйте їх за потреби. Доступ до API й Dashboard вимагає bearer token. Для probes створюються окремі одноразово показані agent tokens; збережіть їх у конфігурації агента. Не публікуйте файли з секретами.
 
+### Безпечний мережевий доступ
+
+API перевіряє bearer token, але HTTP сам по собі не шифрує токени й telemetry. Для доступу через інтернет або недовірені мережі не виставляйте порт `8090` напряму: обмежте його firewall і поставте перед central server TLS reverse proxy. Якщо proxy працює на тому ж host, задайте в `/etc/rtmp-monitor/central.yaml`:
+
+```yaml
+bind_host: 127.0.0.1
+bind_port: 8090
+```
+
+Налаштуйте proxy передавати `Authorization` до backend та обслуговувати Dashboard і `/api/v1/*` через HTTPS. У probe YAML використовуйте URL central server із `https://`, наприклад `https://monitor.example.net`; стандартна перевірка сертифіката залишається увімкненою. Після зміни central config перезапустіть `rtmp-monitor-central`. Якщо TLS proxy не налаштований, дозволяйте прямий HTTP доступ до `8090` лише у довіреній ізольованій мережі або через VPN. SRS HTTP API для ingress probe залишайте прив'язаним до `127.0.0.1:1985` і не публікуйте назовні.
+
 Конфігурація central server: `/etc/rtmp-monitor/central.yaml`. За замовчуванням SQLite database зберігається в `/var/lib/rtmp-monitor/central.db`, логи — у `/var/log/rtmp-monitor`. SQLAlchemy дозволяє задати PostgreSQL через `database_url` без змін у business logic.
 
 ## Встановлення Ubuntu probe
