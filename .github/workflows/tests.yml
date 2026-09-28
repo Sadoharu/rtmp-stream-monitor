@@ -23,6 +23,8 @@ jobs:
             python-version: "3.12"
           - os: windows-latest
             python-version: "3.13"
+          - os: windows-latest
+            python-version: "3.14"
 
     steps:
       - uses: actions/checkout@v7
@@ -45,8 +47,8 @@ jobs:
           $logDir = Join-Path $configDir 'logs\windows-ci'
           $stateDir = Join-Path $configDir 'data\windows-ci'
           $programDir = Join-Path $env:ProgramFiles 'RTMPMonitor-CI'
-          $venvDir = Join-Path $programDir '.venv'
-          $venvPython = Join-Path $venvDir 'Scripts\python.exe'
+          $pythonExe = (Get-Command python).Source
+          $pythonPrefix = (& $pythonExe -c "import sys; print(sys.prefix)").Trim()
           $logPath = Join-Path $logDir 'rtmp-monitor.jsonl'
 
           if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
@@ -85,18 +87,18 @@ jobs:
           Copy-Item -Force (Join-Path (Get-Location) 'pyproject.toml') $programDir
           Set-Content -LiteralPath $configPath -Value $testConfig -Encoding utf8
           try {
-            python -m venv $venvDir
-            if ($LASTEXITCODE -ne 0) { throw 'Could not create the service test venv.' }
-            & $venvPython -m pip install $programDir "pywin32>=306"
-            if ($LASTEXITCODE -ne 0) { throw 'Could not install the agent in the service test venv.' }
-            python -m win32.scripts.pywin32_postinstall -install -quiet
+            & $pythonExe -m pip uninstall -y rtmp-stream-monitor
+            if ($LASTEXITCODE -ne 0) { throw 'Could not remove the editable test installation.' }
+            & $pythonExe -m pip install --upgrade $programDir "pywin32>=306"
+            if ($LASTEXITCODE -ne 0) { throw 'Could not install the agent and pywin32 machine-wide.' }
+            & $pythonExe -m win32.scripts.pywin32_postinstall -install -quiet
             if ($LASTEXITCODE -ne 0) { throw 'pywin32 machine-wide post-install setup failed.' }
-            & $venvPython -m rtmp_monitor.windows_service_cli --startup auto install
+            & $pythonExe -m rtmp_monitor.windows_service_cli --startup auto install
             if ($LASTEXITCODE -ne 0) { throw 'pywin32 service registration failed.' }
-            if (-not (Test-Path -LiteralPath (Join-Path $venvDir 'pythonservice.exe'))) {
-              throw 'pywin32 did not place pythonservice.exe in the agent venv.'
+            if (-not (Test-Path -LiteralPath (Join-Path $pythonPrefix 'pythonservice.exe'))) {
+              throw 'pywin32 did not place pythonservice.exe beside the machine-wide Python interpreter.'
             }
-            & $venvPython -c "from rtmp_monitor.config import load_agent_config; print(load_agent_config(r'$configPath').agent.name)"
+            & $pythonExe -c "from rtmp_monitor.config import load_agent_config; print(load_agent_config(r'$configPath').agent.name)"
             if ($LASTEXITCODE -ne 0) { throw 'The service test YAML is not valid agent configuration.' }
             & sc.exe qc $serviceName
             & reg.exe query "HKLM\SYSTEM\CurrentControlSet\Services\$serviceName" /v ImagePath
@@ -164,7 +166,7 @@ jobs:
                   [TimeSpan]::FromSeconds(20)
                 )
               }
-              & $venvPython -m rtmp_monitor.windows_service_cli remove
+              & $pythonExe -m rtmp_monitor.windows_service_cli remove
               if ($LASTEXITCODE -ne 0) { throw 'Windows service cleanup failed.' }
             }
           }

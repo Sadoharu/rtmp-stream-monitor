@@ -65,22 +65,14 @@ $dataDir = Join-Path $env:ProgramData "RTMPMonitor"
 $configDir = Join-Path $dataDir "config"
 $logDir = Join-Path $dataDir "logs"
 New-Item -ItemType Directory -Force -Path $programDir,$configDir,$logDir,(Join-Path $dataDir "data") | Out-Null
-$venv = Join-Path $programDir ".venv"
-$venvPython = Join-Path $venv "Scripts\python.exe"
 $installedConfig = Join-Path $dataDir "agent.yaml"
 $installedConfigExists = Test-Path -LiteralPath $installedConfig
 if (-not $installedConfigExists -and -not $resolvedConfig) { throw "Agent config not found at $ConfigPath. Provide the Dashboard-generated YAML with -ConfigPath for the first installation." }
 if ($ReplaceConfig -and -not $resolvedConfig) { throw "-ReplaceConfig requires a valid -ConfigPath." }
 $env:RTMP_MONITOR_CONFIG = $installedConfig
-if (Get-Service -Name RtmpMonitorAgent -ErrorAction SilentlyContinue) {
+$existingService = Get-Service -Name RtmpMonitorAgent -ErrorAction SilentlyContinue
+if ($existingService) {
     Stop-Service -Name RtmpMonitorAgent -Force -ErrorAction SilentlyContinue
-    if (Test-Path -LiteralPath $venvPython) {
-        # Use the legacy-compatible module here because the existing venv may
-        # predate windows_service_cli. The class is registered with a stable
-        # package path in both entry points.
-        & $venvPython -m rtmp_monitor.windows_service remove
-        if ($LASTEXITCODE -ne 0) { throw "Could not remove the previous RtmpMonitorAgent service." }
-    }
 }
 $sourceDir = Join-Path $repo "src"
 $installedSourceDir = Join-Path $programDir "src"
@@ -90,12 +82,8 @@ Copy-Item -Recurse -Force $sourceDir $stagedSourceDir
 if (Test-Path -LiteralPath $installedSourceDir) { Remove-Item -LiteralPath $installedSourceDir -Recurse -Force }
 Move-Item -LiteralPath $stagedSourceDir -Destination $installedSourceDir
 Copy-Item -Force (Join-Path $repo "pyproject.toml") $programDir
-& $pythonExe -m venv --clear $venv
-if ($LASTEXITCODE -ne 0) { throw "Failed to create the Python virtual environment." }
-& $venvPython -m pip install --upgrade pip
-if ($LASTEXITCODE -ne 0) { throw "Failed to upgrade pip in the virtual environment." }
-& $venvPython -m pip install $programDir
-if ($LASTEXITCODE -ne 0) { throw "Failed to install RTMP Monitor in the virtual environment." }
+& $pythonExe -m pip install --upgrade $programDir
+if ($LASTEXITCODE -ne 0) { throw "Failed to install RTMP Monitor into the machine-wide Python environment." }
 if (-not $installedConfigExists -or $ReplaceConfig) {
     Copy-Item -Force $resolvedConfig.Path $installedConfig
 } elseif ($resolvedConfig) {
@@ -113,9 +101,11 @@ Set-Acl -LiteralPath $installedConfig -AclObject $configAcl
 if ($LASTEXITCODE -ne 0) { throw "Failed to install pywin32 into the machine-wide Python environment." }
 & $pythonExe -m win32.scripts.pywin32_postinstall -install -quiet
 if ($LASTEXITCODE -ne 0) { throw "pywin32 machine-wide post-install setup failed." }
-& $venvPython -m pip install "pywin32>=306"
-if ($LASTEXITCODE -ne 0) { throw "Failed to install pywin32 in the agent virtual environment." }
-& $venvPython -m rtmp_monitor.windows_service_cli --startup auto install
+if ($existingService) {
+    & $pythonExe -m rtmp_monitor.windows_service_cli remove
+    if ($LASTEXITCODE -ne 0) { throw "Could not remove the previous RtmpMonitorAgent service." }
+}
+& $pythonExe -m rtmp_monitor.windows_service_cli --startup auto install
 if ($LASTEXITCODE -ne 0) { throw "Failed to install the RtmpMonitorAgent Windows service." }
 Start-Service -Name RtmpMonitorAgent
 Write-Host "RTMP Monitor Agent service installed and started. Logs: $logDir"

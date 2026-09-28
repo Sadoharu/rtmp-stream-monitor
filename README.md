@@ -60,7 +60,7 @@ sudo journalctl -u rtmp-monitor-agent -f
 ## Встановлення Windows probe
 
 1. Створіть probe у Dashboard і скопіюйте його YAML у `config/agent.yaml` (або передайте інший шлях у параметрі `-ConfigPath`).
-2. Встановіть Python 3.12+ x64 **для всіх користувачів** (у звичайному інсталяторі Python виберіть `Install for all users`). Windows-служба запускається від `LocalSystem`, тому Python із профілю `C:\Users\...` їй недоступний. Інсталятор автоматично шукає машинну інсталяцію в реєстрі Windows та `C:\Program Files`, незалежно від того, який Python обирає `py -3`. Для Python у власній папці передайте повний шлях параметром `-PythonPath`. Також переконайтеся, що `ffmpeg.exe` і `ffprobe.exe` доступні через PATH. FFmpeg можна встановити через `winget install Gyan.FFmpeg`.
+2. Встановіть Python 3.12+ x64 **для всіх користувачів** (у звичайному інсталяторі Python виберіть `Install for all users`). Windows-служба запускається від `LocalSystem`, тому Python із профілю `C:\Users\...` їй недоступний. Інсталятор автоматично шукає машинну інсталяцію в реєстрі Windows та `C:\Program Files`, незалежно від того, який Python обирає `py -3`. Для Python у власній папці передайте повний шлях параметром `-PythonPath`. Служба використовує вибраний машинний Python без virtualenv, як рекомендує [pywin32 для Windows Services](https://github.com/mhammond/pywin32#running-as-a-windows-service). Також переконайтеся, що `ffmpeg.exe` і `ffprobe.exe` доступні через PATH. FFmpeg можна встановити через `winget install Gyan.FFmpeg`.
 3. Запустіть PowerShell від Administrator:
 
 ```powershell
@@ -145,7 +145,7 @@ sudo systemctl daemon-reload
 
 Для агента використайте `rtmp-monitor-agent.service`. Видалення `/var/lib/rtmp-monitor` або `/var/lib/rtmp-monitor-agent` знищує базу/чергу та потребує окремого підтвердження адміністратора.
 
-Щоб прибрати центральний код і конфігурацію після зупинки служби, виконайте `sudo rm -rf /opt/rtmp-monitor /etc/rtmp-monitor`; для probe використайте `/opt/rtmp-monitor-agent /etc/rtmp-monitor-agent`. Щоб також видалити дані, окремо перевірте та видаліть відповідний `/var/lib/rtmp-monitor*` каталог і логи. На Windows видаліть service з elevated PowerShell командою `& "$env:ProgramFiles\RTMPMonitor\.venv\Scripts\python.exe" -m rtmp_monitor.windows_service_cli remove`, потім видаліть `C:\Program Files\RTMPMonitor` і за потреби окремо `C:\ProgramData\RtmpMonitor`.
+Щоб прибрати центральний код і конфігурацію після зупинки служби, виконайте `sudo rm -rf /opt/rtmp-monitor /etc/rtmp-monitor`; для probe використайте `/opt/rtmp-monitor-agent /etc/rtmp-monitor-agent`. Щоб також видалити дані, окремо перевірте та видаліть відповідний `/var/lib/rtmp-monitor*` каталог і логи. На Windows у elevated PowerShell зупиніть та видаліть службу командами `Stop-Service RtmpMonitorAgent` і `sc.exe delete RtmpMonitorAgent`. За потреби видаліть пакет `rtmp-stream-monitor` із машинного Python, шлях до якого надрукував інсталятор (`<python.exe> -m pip uninstall rtmp-stream-monitor`), потім видаліть `C:\Program Files\RTMPMonitor` і, якщо не потрібні, логи та конфігурацію в `C:\ProgramData\RtmpMonitor`.
 
 ## Розробка та перевірки
 
