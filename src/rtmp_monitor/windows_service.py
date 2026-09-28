@@ -44,6 +44,9 @@ class RtmpMonitorAgentService(win32serviceutil.ServiceFramework):
         logger.info("RTMP Monitor Agent service starting")
         try:
             asyncio.run(self._run_agent(config))
+        except Exception:
+            logger.exception("RTMP Monitor Agent service failed")
+            raise
         finally:
             logger.info("RTMP Monitor Agent service stopped")
 
