@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import signal
 import threading
 
 import win32event
@@ -14,6 +15,26 @@ import win32serviceutil
 from .agent import AgentRunner
 from .config import load_agent_config
 from .logging_setup import configure_logging
+
+
+def _ignore_signal_wakeup_fd(callback):
+    """Run Proactor loop setup/teardown without installing a Python signal fd."""
+    set_wakeup_fd = signal.set_wakeup_fd
+    signal.set_wakeup_fd = lambda *_args, **_kwargs: -1
+    try:
+        return callback()
+    finally:
+        signal.set_wakeup_fd = set_wakeup_fd
+
+
+class _WindowsServiceProactorEventLoop(asyncio.ProactorEventLoop):
+    """Keep subprocess support while avoiding pywin32's non-main service thread."""
+
+    def __init__(self):
+        _ignore_signal_wakeup_fd(super().__init__)
+
+    def close(self):
+        _ignore_signal_wakeup_fd(super().close)
 
 
 class RtmpMonitorAgentService(win32serviceutil.ServiceFramework):
@@ -43,7 +64,7 @@ class RtmpMonitorAgentService(win32serviceutil.ServiceFramework):
         logger = logging.getLogger(__name__)
         logger.info("RTMP Monitor Agent service starting")
         try:
-            asyncio.run(self._run_agent(config))
+            asyncio.run(self._run_agent(config), loop_factory=_WindowsServiceProactorEventLoop)
         except Exception:
             logger.exception("RTMP Monitor Agent service failed")
             raise
