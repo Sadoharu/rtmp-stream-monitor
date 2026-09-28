@@ -133,7 +133,7 @@ jobs:
               Get-Content -LiteralPath $logPath -Tail 100
             }
             $eventQueries = @(
-              @{ LogName = 'Application'; ProviderName = 'Python Service'; StartTime = (Get-Date).AddMinutes(-5) },
+              @{ LogName = 'Application'; Id = @(14); StartTime = (Get-Date).AddMinutes(-5) },
               @{ LogName = 'System'; ProviderName = 'Service Control Manager'; Id = @(7000, 7009, 7011, 7023, 7024, 7031, 7034); StartTime = (Get-Date).AddMinutes(-5) }
             )
             foreach ($query in $eventQueries) {
@@ -142,15 +142,14 @@ jobs:
                 Write-Host "Found $($events.Count) matching $($query.LogName) events."
                 foreach ($event in $events) {
                   $eventXml = $event.ToXml()
-                  if ($eventXml -match 'RtmpMonitorAgent|Python Service|pythonservice|PythonService') {
-                    Write-Host "Event $($query.LogName) $($event.TimeCreated) $($event.ProviderName) ID $($event.Id)"
-                    Write-Host $eventXml
-                  }
+                  Write-Host "Event $($query.LogName) $($event.TimeCreated) $($event.ProviderName) ID $($event.Id)"
+                  Write-Host $eventXml
                 }
               } catch {
                 Write-Host "Could not query $($query.LogName) event log: $($_.Exception.Message)"
               }
             }
+            & sc.exe queryex $serviceName
             & sc.exe qc $serviceName
             & reg.exe query "HKLM\SYSTEM\CurrentControlSet\Services\$serviceName" /v ImagePath
             & reg.exe query "HKLM\SYSTEM\CurrentControlSet\Services\$serviceName\PythonClass" /ve
