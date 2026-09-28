@@ -93,6 +93,14 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'pywin32 machine-wide post-install setup failed.' }
             & $venvPython -m rtmp_monitor.windows_service_cli --startup auto install
             if ($LASTEXITCODE -ne 0) { throw 'pywin32 service registration failed.' }
+            if (-not (Test-Path -LiteralPath (Join-Path $venvDir 'pythonservice.exe'))) {
+              throw 'pywin32 did not place pythonservice.exe in the agent venv.'
+            }
+            & $venvPython -c "from rtmp_monitor.config import load_agent_config; print(load_agent_config(r'$configPath').agent.name)"
+            if ($LASTEXITCODE -ne 0) { throw 'The service test YAML is not valid agent configuration.' }
+            & sc.exe qc $serviceName
+            & reg.exe query "HKLM\SYSTEM\CurrentControlSet\Services\$serviceName" /v ImagePath
+            & reg.exe query "HKLM\SYSTEM\CurrentControlSet\Services\$serviceName\PythonClass" /ve
 
             Start-Service -Name $serviceName
             $deadline = (Get-Date).AddSeconds(20)
@@ -116,22 +124,25 @@ jobs:
             Write-Host 'Windows service started and initialized the probe agent.'
           }
           catch {
+            $failure = $_
             Write-Host 'Windows service smoke-test diagnostics:'
+            Write-Host $failure.Exception.ToString()
             if (Test-Path -LiteralPath $logPath) {
               Get-Content -LiteralPath $logPath -Tail 100
             }
-            Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = (Get-Date).AddMinutes(-5) } -ErrorAction SilentlyContinue |
-              Where-Object { $_.ProviderName -match 'Python|RtmpMonitorAgent' -or $_.Message -match 'RtmpMonitorAgent|pythonservice|PythonService' } |
-              Select-Object -First 20 TimeCreated, ProviderName, Id, Message |
-              Format-List
-            $serviceKey = "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName"
-            if (Test-Path -LiteralPath $serviceKey) {
-              Get-ItemProperty -LiteralPath $serviceKey | Select-Object ImagePath
-              $pythonClassKey = Join-Path $serviceKey 'PythonClass'
-              if (Test-Path -LiteralPath $pythonClassKey) {
-                (Get-Item -LiteralPath $pythonClassKey).GetValue('')
+            foreach ($channel in @('Application', 'System')) {
+              try {
+                Get-WinEvent -FilterHashtable @{ LogName = $channel; StartTime = (Get-Date).AddMinutes(-5) } -ErrorAction Stop |
+                  Where-Object { $_.ProviderName -match 'Python|RtmpMonitorAgent|Service Control Manager' -or $_.Message -match 'RtmpMonitorAgent|pythonservice|PythonService' } |
+                  Select-Object -First 20 TimeCreated, ProviderName, Id, Message |
+                  Format-List
+              } catch {
+                Write-Host "Could not read $channel event log: $($_.Exception.Message)"
               }
             }
+            & sc.exe qc $serviceName
+            & reg.exe query "HKLM\SYSTEM\CurrentControlSet\Services\$serviceName" /v ImagePath
+            & reg.exe query "HKLM\SYSTEM\CurrentControlSet\Services\$serviceName\PythonClass" /ve
             throw
           }
           finally {
