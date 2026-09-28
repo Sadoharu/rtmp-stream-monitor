@@ -23,6 +23,22 @@ def test_pts_regression_is_reported():
     assert events[0]["code"] == "PTS_REGRESSION"
 
 
+def test_i_picture_without_key_flag_is_not_counted_as_keyframe():
+    analyzer = FrameAnalyzer()
+    analyzer.feed(frame(0, 0.0, 0, "I"), 1.0)
+
+    assert analyzer.last_frame_type == "I"
+    assert analyzer.last_frame_is_keyframe is False
+    assert analyzer.i_frame_count == 1
+    assert analyzer.i_frames_without_key_flag == 1
+    assert analyzer.keyframe_count == 0
+    assert analyzer.current_gop_frames is None
+
+    gap = analyzer.check_keyframe_gap(6.1)
+    assert gap[0]["code"] == "KEYFRAME_GAP"
+    assert gap[0]["details"]["no_keyframe_seen"] is True
+
+
 def test_new_epoch_ignores_timestamp_reset_after_reconnect():
     analyzer = FrameAnalyzer()
     analyzer.feed(frame(0, 100.0, 1, "I"), 1.0)

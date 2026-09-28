@@ -229,7 +229,7 @@ def _timeline_context(session: Session, stream_id: str, opened_at: datetime, now
 
 
 def _context_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
-    keys = {"ffmpeg_running", "last_frame_age", "last_audio_frame_age", "frames", "keyframes", "last_frame_type", "last_frame_is_keyframe", "last_keyframe_age", "current_gop_duration", "current_gop_frames", "expected_gop_frames", "expected_gop_seconds", "last_media_pts", "last_media_dts", "decode_errors", "reconnect_count", "fps", "resolution", "video_codec", "audio_codec", "bitrate", "clock", "network"}
+    keys = {"ffmpeg_running", "last_frame_age", "last_audio_frame_age", "frames", "keyframes", "i_frames", "i_frames_without_key_flag", "last_frame_type", "last_frame_is_keyframe", "last_keyframe_age", "current_gop_duration", "current_gop_frames", "expected_gop_frames", "expected_gop_seconds", "last_media_pts", "last_media_dts", "decode_errors", "reconnect_count", "fps", "resolution", "video_codec", "audio_codec", "bitrate", "clock", "network"}
     return {key: metrics[key] for key in keys if key in metrics}
 
 

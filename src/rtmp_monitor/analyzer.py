@@ -32,6 +32,8 @@ class FrameAnalyzer:
         self.last_frame_is_keyframe = False
         self.frame_count = 0
         self.keyframe_count = 0
+        self.i_frame_count = 0
+        self.i_frames_without_key_flag = 0
         self.gop_lengths: deque[int] = deque(maxlen=32)
         self.keyframe_pts_intervals: deque[float] = deque(maxlen=32)
         self.pts_regressions = 0
@@ -68,10 +70,15 @@ class FrameAnalyzer:
         if not match:
             return []
         pts = float(match.group("pts"))
-        is_keyframe = match.group("key") == "1" or match.group("type") == "I"
+        frame_type = match.group("type")
+        is_keyframe = match.group("key") == "1"
         self.frame_count += 1
-        self.last_frame_type = match.group("type")
+        self.last_frame_type = frame_type
         self.last_frame_is_keyframe = is_keyframe
+        if frame_type == "I":
+            self.i_frame_count += 1
+            if not is_keyframe:
+                self.i_frames_without_key_flag += 1
         self.last_frame_mono = monotonic_time
         if self.first_frame_mono is None:
             self.first_frame_mono = monotonic_time

@@ -443,6 +443,8 @@ class StreamProbe:
             "packets": self.packet_count,
             "last_frame_type": self.analyzer.last_frame_type,
             "last_frame_is_keyframe": self.analyzer.last_frame_is_keyframe,
+            "i_frames": self.analyzer.i_frame_count if self.config.agent.profile == "DEEP" else None,
+            "i_frames_without_key_flag": self.analyzer.i_frames_without_key_flag if self.config.agent.profile == "DEEP" else None,
             "last_media_pts": self.analyzer.last_pts if self.config.agent.profile == "DEEP" else self.stream_metadata.get("pts_time"),
             "keyframes": self.analyzer.keyframe_count,
             "last_keyframe_age": round(now - self.analyzer.last_keyframe_mono, 3) if self.analyzer.last_keyframe_mono else None,
