@@ -79,6 +79,7 @@ def main() -> int:
             print(f"Agent status: {found['status']}")
             print(f"Video codec/resolution: {metrics.get('video_codec')} / {metrics.get('resolution')}")
             print(f"Video frames or packets/keyframes: {metrics.get('frames') if args.profile == 'DEEP' else metrics.get('packets')} / {metrics.get('keyframes')}")
+            print(f"PTS regressions/jumps: {metrics.get('pts_regressions')} / {metrics.get('pts_jumps')}")
             print(f"Latest events: {', '.join(event.get('code','') for event in found.get('events', [])) or 'none'}")
             print(f"Central samples queued: {metrics.get('queue_rows')}")
             print(f"Last video/audio frame age: {metrics.get('last_frame_age')} / {metrics.get('last_audio_frame_age')} s")
@@ -87,6 +88,9 @@ def main() -> int:
             active_events = sorted({event.get("code", "") for incident in active for symptom in incident.get("symptoms", []) for event in symptom.get("events", []) if event.get("code")})
             print(f"Active incident diagnoses: {', '.join(item.get('diagnosis', '') for item in active) or 'none'}")
             print(f"Correlated event codes: {', '.join(active_events) or 'none'}")
+            for incident in active:
+                print("Incident symptoms:")
+                print(json.dumps(incident.get("symptoms", []), indent=2))
             media_count = metrics.get("frames") if args.profile == "DEEP" else metrics.get("packets")
             if not media_count or not metrics.get("keyframes") or metrics.get("video_codec") != "h264":
                 print("Expected H.264 frames and keyframes did not reach the collector")
