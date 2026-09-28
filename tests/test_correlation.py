@@ -54,6 +54,29 @@ def test_client_failure_with_retransmits_points_to_network():
     assert "NETWORK" in result["probable_location"]
 
 
+def test_windows_hostwide_retransmits_alone_do_not_prove_client_network_fault():
+    result = diagnose_observations([
+        report("SERVER_EGRESS", "egress"),
+        report("CLIENT", "client", "CRITICAL", broken("FREEZE_START"), {
+            "provider": "windows", "tcp_retransmissions": 1, "rtt_ms": 4,
+            "packet_loss_percent": 0, "tcp_state": "ESTABLISHED",
+        }),
+    ])
+    assert result["diagnosis"] == "NETWORK_PATH_UNCONFIRMED"
+    assert "HOST-WIDE" in result["probable_location"]
+
+
+def test_windows_retransmits_with_independent_rtt_spike_support_network_fault():
+    result = diagnose_observations([
+        report("SERVER_EGRESS", "egress"),
+        report("CLIENT", "client", "CRITICAL", broken("FREEZE_START"), {
+            "provider": "windows", "tcp_retransmissions": 1, "rtt_ms": 182,
+            "packet_loss_percent": 0, "tcp_state": "ESTABLISHED",
+        }),
+    ])
+    assert result["diagnosis"] == "NETWORK_PATH_PROBLEM"
+
+
 def test_client_only_media_error_without_network_evidence_points_to_client():
     ingress = report("SERVER_INGRESS", "ingress")
     egress = report("SERVER_EGRESS", "egress")

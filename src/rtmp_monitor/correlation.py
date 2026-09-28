@@ -36,11 +36,17 @@ def _network_is_bad(observation: dict[str, Any]) -> bool:
     retransmits = network.get("tcp_retransmissions")
     tcp_state = str(network.get("tcp_state", "")).upper()
     return bool(
-        (isinstance(retransmits, (int, float)) and retransmits > 0)
+        (network.get("provider") != "windows" and isinstance(retransmits, (int, float)) and retransmits > 0)
         or (isinstance(network.get("packet_loss_percent"), (int, float)) and network["packet_loss_percent"] > 0)
         or (isinstance(network.get("rtt_ms"), (int, float)) and network["rtt_ms"] > 100)
         or (tcp_state and tcp_state not in {"ESTABLISHED", "ESTAB", "UNKNOWN"})
     )
+
+
+def _has_unattributed_windows_retransmits(observation: dict[str, Any]) -> bool:
+    network = (observation.get("metrics") or {}).get("network") or {}
+    retransmits = network.get("tcp_retransmissions")
+    return network.get("provider") == "windows" and isinstance(retransmits, (int, float)) and retransmits > 0
 
 
 def diagnose_observations(observations: list[dict[str, Any]], media_tolerance_seconds: float = 5.0) -> dict[str, Any] | None:
@@ -98,6 +104,9 @@ def diagnose_observations(observations: list[dict[str, Any]], media_tolerance_se
             location = "NETWORK BETWEEN SERVER EGRESS AND AFFECTED CLIENT"
             if packet_timestamp_lag:
                 location += f" (media PTS lag {max(item['lag_seconds'] for item in media_lags)} s)"
+        elif any(_has_unattributed_windows_retransmits(item) for item in bad_clients):
+            diagnosis = "NETWORK_PATH_UNCONFIRMED"
+            location = "CLIENT PATH MAY BE DEGRADED, BUT THE WINDOWS RETRANSMIT COUNTER IS HOST-WIDE AND CANNOT BE ATTRIBUTED TO THIS RTMP FLOW"
         else:
             diagnosis = "CLIENT_PROBLEM"
             location = "CLIENT RECEIVE / DECODER (network counters do not show a transport fault)"

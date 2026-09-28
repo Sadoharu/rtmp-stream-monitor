@@ -90,7 +90,7 @@ FFmpeg керується агентом як subprocess: progress щосеку�
 
 ## Network і clock telemetry
 
-Linux використовує `ss -ti` для TCP_INFO відповідного напрямку, якщо утиліта й права ОС дозволяють; RTT/ICMP probe виконується окремо. Windows читає системний counter `SegmentsRetransmitted` і стан TCP-з'єднання; retransmit counter на Windows є host-wide різницею між samples, а не лічильником одного RTMP socket. ICMP може бути заблокований. Відсутній provider не ламає медіамоніторинг.
+Linux використовує `ss -ti` для TCP_INFO відповідного напрямку, якщо утиліта й права ОС дозволяють; RTT/ICMP probe виконується окремо. Windows читає системний counter `SegmentsRetransmitted` і стан TCP-з'єднання; retransmit counter на Windows є host-wide різницею між samples, а не лічильником одного RTMP socket. Окремий Windows retransmit без інших мережевих ознак дає `NETWORK_PATH_UNCONFIRMED`, щоб не приписувати сторонній TCP-трафік RTMP. ICMP може бути заблокований. Відсутній provider не ламає медіамоніторинг.
 
 NTP status береться з `timedatectl` (Linux) або `w32tm` (Windows); система не змінює NTP налаштування. Offset береться з NTP provider, а за його відсутності — приблизно з центрального HTTP `Date` (точність до секунди). За spread більше `clock_offset_warning_ms` Dashboard показує `CLOCK NOT SYNCHRONIZED`. Для коректної кореляції налаштуйте NTP на всіх hosts.
 

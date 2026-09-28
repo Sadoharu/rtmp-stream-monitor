@@ -27,7 +27,7 @@ RTMP over TCP does not expose a frame identity shared by independent decoders. W
 ## Transport and time sources
 
 - Linux uses `ss -ti` flow information when present and ICMP echo timing separately.
-- Windows uses `Get-NetTCPStatistics` retransmit counter deltas (system-wide) and `Get-NetTCPConnection` state. Windows does not provide an equivalent per-flow retransmission count through this implementation.
+- Windows uses `Get-NetTCPStatistics` retransmit counter deltas (system-wide) and `Get-NetTCPConnection` state. Windows does not provide an equivalent per-flow retransmission count through this implementation, so a retransmit delta alone produces `NETWORK_PATH_UNCONFIRMED`; RTT/loss/state evidence or aligned packet-mode PTS lag is needed to attribute the issue to the client path.
 - ICMP loss/RTT is missing when the target drops ping. No capture ring is enabled.
 - Agent NTP state comes from the operating system. Offset reported from central HTTP Date is coarse (one-second date precision) and only approximate; it does not replace NTP.
 
