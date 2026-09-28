@@ -34,3 +34,84 @@ jobs:
         run: python -m pip install -e ".[test,windows-service]"
       - name: Run test suite
         run: python -m pytest
+      - name: Smoke test Windows service lifecycle
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $serviceName = 'RtmpMonitorAgent'
+          $configDir = Join-Path $env:ProgramData 'RtmpMonitor'
+          $configPath = Join-Path $configDir 'agent.yaml'
+          $logDir = Join-Path $configDir 'logs\windows-ci'
+          $stateDir = Join-Path $configDir 'data\windows-ci'
+
+          if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
+            throw "Unexpected pre-existing $serviceName service on the hosted runner."
+          }
+          if (Test-Path -LiteralPath $configPath) {
+            throw "Unexpected pre-existing test config at $configPath."
+          }
+
+          $logDirYaml = $logDir.Replace('\', '/')
+          $stateDirYaml = $stateDir.Replace('\', '/')
+          $testConfig = @"
+          server:
+            url: http://127.0.0.1:9
+          agent:
+            name: windows-ci
+            location: github-actions
+            role: CLIENT
+            token: windows-ci-token
+            profile: LIGHT
+          streams:
+            - id: windows-ci
+              url: rtmp://127.0.0.1:1935/live/windows-ci
+          network:
+            enabled: false
+          state_dir: '$stateDirYaml'
+          log_dir: '$logDirYaml'
+          "@
+
+          New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+          Set-Content -LiteralPath $configPath -Value $testConfig -Encoding utf8
+          try {
+            python -m pywin32_postinstall -install
+            if ($LASTEXITCODE -ne 0) { throw 'pywin32 post-install setup failed.' }
+            python -m rtmp_monitor.windows_service_cli --startup auto install
+            if ($LASTEXITCODE -ne 0) { throw 'pywin32 service registration failed.' }
+
+            Start-Service -Name $serviceName
+            $deadline = (Get-Date).AddSeconds(20)
+            do {
+              $service = Get-Service -Name $serviceName
+              if ($service.Status -eq 'Running') { break }
+              Start-Sleep -Seconds 1
+            } while ((Get-Date) -lt $deadline)
+            if ($service.Status -ne 'Running') {
+              throw "Service did not reach Running state (current: $($service.Status))."
+            }
+
+            $logPath = Join-Path $logDir 'rtmp-monitor.jsonl'
+            $deadline = (Get-Date).AddSeconds(15)
+            while (-not (Test-Path -LiteralPath $logPath) -and (Get-Date) -lt $deadline) {
+              Start-Sleep -Seconds 1
+            }
+            if (-not (Test-Path -LiteralPath $logPath)) {
+              throw 'The Windows service ran without initializing the agent log.'
+            }
+            Write-Host 'Windows service started and initialized the probe agent.'
+          }
+          finally {
+            if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
+              Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
+              $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+              if ($service -and $service.Status -ne 'Stopped') {
+                $service.WaitForStatus(
+                  [System.ServiceProcess.ServiceControllerStatus]::Stopped,
+                  [TimeSpan]::FromSeconds(20)
+                )
+              }
+              python -m rtmp_monitor.windows_service_cli remove
+              if ($LASTEXITCODE -ne 0) { throw 'Windows service cleanup failed.' }
+            }
+          }
