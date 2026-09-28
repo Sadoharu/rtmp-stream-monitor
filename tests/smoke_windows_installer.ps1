@@ -65,7 +65,7 @@ log_dir: '$logDirYaml'
     & sc.exe qfailure $serviceName
     if ($LASTEXITCODE -ne 0) { throw 'Windows service recovery actions were not configured.' }
     $failureFlagOutput = (& sc.exe qfailureflag $serviceName 2>&1) -join "`n"
-    if ($LASTEXITCODE -ne 0 -or $failureFlagOutput -notmatch ':\s*1') { throw "Recovery on non-crash service errors was not enabled: $failureFlagOutput" }
+    if ($LASTEXITCODE -ne 0 -or $failureFlagOutput -notmatch ':\s*(1|TRUE)\b') { throw "Recovery on non-crash service errors was not enabled: $failureFlagOutput" }
 
     $deadline = (Get-Date).AddSeconds(20)
     do {
