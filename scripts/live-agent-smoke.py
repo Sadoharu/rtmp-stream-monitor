@@ -105,6 +105,25 @@ def main() -> int:
                 f"TCP retransmits={network.get('tcp_retransmissions')}; "
                 f"state={network.get('tcp_state')}"
             )
+            clock = data.get("clock_warning", {})
+            print(
+                "Clock check: "
+                f"warning={clock.get('warning')}; "
+                f"unsynchronized={clock.get('unsynchronized_agents')}; "
+                f"spread={clock.get('offset_spread_ms')} ms "
+                f"(lower bound {clock.get('offset_spread_lower_bound_ms')} ms); "
+                f"max absolute offset lower bound="
+                f"{clock.get('maximum_absolute_offset_lower_bound_ms')} ms; "
+                f"uncertainty={clock.get('measurement_uncertainty_ms')} ms; "
+                f"measurement={clock.get('measurement')}"
+            )
+            agent_clock = metrics.get("clock", {})
+            print(
+                "Agent clock: "
+                f"NTP synchronized={agent_clock.get('ntp_synchronized')}; "
+                f"NTP offset={agent_clock.get('estimated_offset_ms')} ms; "
+                f"central offset={agent_clock.get('central_offset_ms')} ms"
+            )
             active = [item for item in data.get("incidents", []) if item.get("active") and item.get("stream_id") == stream_id]
             active_events = sorted({event.get("code", "") for incident in active for symptom in incident.get("symptoms", []) for event in symptom.get("events", []) if event.get("code")})
             print(f"Active incident diagnoses: {', '.join(item.get('diagnosis', '') for item in active) or 'none'}")

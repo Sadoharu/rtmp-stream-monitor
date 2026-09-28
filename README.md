@@ -96,7 +96,7 @@ FFmpeg керується агентом як subprocess: progress щосеку�
 
 Linux використовує `ss -ti` для TCP_INFO відповідного напрямку, якщо утиліта й права ОС дозволяють; RTT/ICMP probe виконується окремо. Windows читає системний counter `SegmentsRetransmitted` і стан TCP-з'єднання; retransmit counter на Windows є host-wide різницею між samples, а не лічильником одного RTMP socket. Окремий Windows retransmit без інших мережевих ознак дає `NETWORK_PATH_UNCONFIRMED`, щоб не приписувати сторонній TCP-трафік RTMP. ICMP може бути заблокований. Відсутній provider не ламає медіамоніторинг.
 
-NTP status береться з `timedatectl` (Linux) або `w32tm` (Windows); система не змінює NTP налаштування. Offset береться з NTP provider, а за його відсутності — приблизно з центрального HTTP `Date` (точність до секунди). За spread більше `clock_offset_warning_ms` Dashboard показує `CLOCK NOT SYNCHRONIZED`. Для коректної кореляції налаштуйте NTP на всіх hosts.
+NTP status береться з `timedatectl` (Linux) або `w32tm` (Windows); система не змінює NTP налаштування. Offset береться з NTP provider, а за його відсутності — з timestamp приймання telemetry центральним сервером; невизначеність оцінюється як половина часу запиту. Для сумісності зі старим central API agent може використати HTTP `Date` із секундною точністю. Dashboard враховує похибку вимірювання і попереджає, якщо нижня межа абсолютного skew або міжprobe spread перевищує `clock_offset_warning_ms`; явний статус NTP unsynchronized також дає попередження. Для коректної кореляції налаштуйте NTP на всіх hosts.
 
 Pcap ring buffer не реалізований: він опційний і не використовується для постійного моніторингу.
 
@@ -165,4 +165,4 @@ rtmp-monitor server --config config/central.dev.yaml
 python scripts/live-agent-smoke.py "rtmp://HOST:1935/live/STREAM" --seconds 30 --network
 ```
 
-Команда друкує codec, роздільність, frame/keyframe counters, timestamp anomalies та мережеву телеметрію. `--network` додає RTT/ICMP, втрати пакетів і доступні платформні TCP counters. Цей smoke test запускає probe в поточному процесі й не перевіряє встановлену Windows-службу чи повний acceptance сценарій із перериванням потоку.
+Команда друкує codec, роздільність, frame/keyframe counters, timestamp anomalies, мережеву телеметрію та clock-warning evidence з урахуванням похибки вимірювання. `--network` додає RTT/ICMP, втрати пакетів і доступні платформні TCP counters. Цей smoke test запускає probe в поточному процесі й не перевіряє встановлену Windows-службу чи повний acceptance сценарій із перериванням потоку.

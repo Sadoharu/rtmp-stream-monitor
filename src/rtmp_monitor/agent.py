@@ -547,6 +547,8 @@ class AgentRunner:
         self._network_snapshot: dict[str, Any] = {}
         self._clock_snapshot: dict[str, Any] = {}
         self._http_offset_ms: float | None = None
+        self._http_offset_uncertainty_ms: float | None = None
+        self._http_offset_source: str | None = None
         self._http_offset_updated_mono: float | None = None
         self.started_mono = time.monotonic()
         self.agent_process = psutil.Process()
@@ -587,6 +589,12 @@ class AgentRunner:
                     central_offset = response_data.get("central_offset_ms")
                     if isinstance(central_offset, (int, float)):
                         self._http_offset_ms = float(central_offset)
+                        uncertainty = response_data.get("central_offset_uncertainty_ms")
+                        if isinstance(uncertainty, (int, float)) and uncertainty >= 0:
+                            self._http_offset_uncertainty_ms = float(uncertainty)
+                        source = response_data.get("central_offset_source")
+                        if isinstance(source, str):
+                            self._http_offset_source = source
                         self._http_offset_updated_mono = time.monotonic()
                     self.outbox.ack(ids)
                 except urllib.error.HTTPError as exc:
@@ -633,6 +641,8 @@ class AgentRunner:
             "clock": {
                 **self._clock_snapshot,
                 "central_offset_ms": self._http_offset_ms,
+                "central_offset_uncertainty_ms": self._http_offset_uncertainty_ms,
+                "central_offset_source": self._http_offset_source,
                 "central_offset_age_seconds": offset_age,
             },
             "agent_uptime_seconds": round(now - self.started_mono, 1),
@@ -651,13 +661,34 @@ class AgentRunner:
         before = time.time()
         with urllib.request.urlopen(request, timeout=10) as response:
             body = json.loads(response.read().decode("utf-8"))
-            date_header = response.headers.get("Date")
-            if date_header:
+            after = time.time()
+            elapsed = max(0.0, after - before)
+            midpoint = (before + after) / 2
+            received_at = body.get("received_at")
+            if isinstance(received_at, str):
                 try:
-                    from email.utils import parsedate_to_datetime
+                    central_time = datetime.fromisoformat(received_at.replace("Z", "+00:00"))
+                    if central_time.tzinfo is None:
+                        central_time = central_time.replace(tzinfo=timezone.utc)
+                    body["central_offset_ms"] = round((central_time.timestamp() - midpoint) * 1000, 1)
+                    body["central_offset_source"] = "central_receive_timestamp"
+                    body["central_offset_uncertainty_ms"] = round(
+                        1 + elapsed * 500, 1
+                    )
+                except (OverflowError, TypeError, ValueError):
+                    received_at = None
+            if not isinstance(received_at, str):
+                date_header = response.headers.get("Date")
+                if date_header:
+                    try:
+                        from email.utils import parsedate_to_datetime
 
-                    central = parsedate_to_datetime(date_header).timestamp()
-                    body["central_offset_ms"] = round((central - (before + time.time()) / 2) * 1000, 1)
-                except (TypeError, ValueError):
-                    pass
+                        central = parsedate_to_datetime(date_header).timestamp()
+                        body["central_offset_ms"] = round((central - midpoint) * 1000, 1)
+                        body["central_offset_source"] = "http_date"
+                        # HTTP Date has one-second resolution. Include that
+                        # quantization bound and half the request window.
+                        body["central_offset_uncertainty_ms"] = round(1001 + elapsed * 500, 1)
+                    except (OverflowError, TypeError, ValueError):
+                        pass
             return body

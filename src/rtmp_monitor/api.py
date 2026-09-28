@@ -400,21 +400,55 @@ def _incident_dict(incident: Incident) -> dict[str, Any]:
 def _clock_warning(samples: list[tuple[str, dict[str, Any]]], threshold_ms: float) -> dict[str, Any]:
     unsynchronized = []
     offsets = []
+    measurements = set()
     for name, metrics in samples:
         clock = metrics.get("clock") or {}
         if clock.get("ntp_synchronized") is False:
             unsynchronized.append(name)
         offset = clock.get("estimated_offset_ms")
-        if not isinstance(offset, (int, float)):
+        from_agent_ntp = isinstance(offset, (int, float))
+        if not from_agent_ntp:
             offset = clock.get("central_offset_ms")
         if isinstance(offset, (int, float)):
-            offsets.append((name, float(offset)))
-    spread = round(max((value for _, value in offsets), default=0) - min((value for _, value in offsets), default=0), 1) if offsets else None
-    coarse = any(isinstance((metrics.get("clock") or {}).get("central_offset_ms"), (int, float)) and not isinstance((metrics.get("clock") or {}).get("estimated_offset_ms"), (int, float)) for _, metrics in samples)
-    max_abs = round(max((abs(value) for _, value in offsets), default=0), 1) if offsets else None
-    warning = bool(unsynchronized or (spread is not None and spread > threshold_ms) or (max_abs is not None and max_abs > threshold_ms))
+            uncertainty = 0.0
+            if from_agent_ntp:
+                measurements.add("agent NTP provider")
+            else:
+                source = clock.get("central_offset_source") or "http_date"
+                measurements.add(
+                    "central receive timestamp" if source == "central_receive_timestamp"
+                    else "approximate central HTTP Date"
+                )
+                reported_uncertainty = clock.get("central_offset_uncertainty_ms")
+                uncertainty = (
+                    float(reported_uncertainty)
+                    if isinstance(reported_uncertainty, (int, float)) and reported_uncertainty >= 0
+                    else 1000.0
+                )
+            offsets.append((name, float(offset), uncertainty))
+    values = [value for _, value, _ in offsets]
+    spread = round(max(values, default=0) - min(values, default=0), 1) if values else None
+    spread_lower_bound = max(
+        (max(0.0, abs(left - right) - left_uncertainty - right_uncertainty)
+         for index, (_, left, left_uncertainty) in enumerate(offsets)
+         for _, right, right_uncertainty in offsets[index + 1:]),
+        default=0.0,
+    ) if offsets else None
+    max_abs = round(max((abs(value) for _, value, _ in offsets), default=0), 1) if offsets else None
+    max_abs_lower_bound = max(
+        (max(0.0, abs(value) - uncertainty) for _, value, uncertainty in offsets),
+        default=0.0,
+    ) if offsets else None
+    warning = bool(
+        unsynchronized
+        or (spread_lower_bound is not None and spread_lower_bound > threshold_ms)
+        or (max_abs_lower_bound is not None and max_abs_lower_bound > threshold_ms)
+    )
     return {"warning": warning,
             "message": "CLOCK NOT SYNCHRONIZED" if warning else None,
             "unsynchronized_agents": unsynchronized, "offset_spread_ms": spread, "threshold_ms": threshold_ms,
             "maximum_absolute_offset_ms": max_abs,
-            "measurement": "approximate central HTTP Date" if coarse else "agent NTP provider"}
+            "offset_spread_lower_bound_ms": round(spread_lower_bound, 1) if spread_lower_bound is not None else None,
+            "maximum_absolute_offset_lower_bound_ms": round(max_abs_lower_bound, 1) if max_abs_lower_bound is not None else None,
+            "measurement_uncertainty_ms": round(max((uncertainty for _, _, uncertainty in offsets), default=0), 1) if offsets else None,
+            "measurement": "; ".join(sorted(measurements)) if measurements else None}
