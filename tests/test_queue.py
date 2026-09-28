@@ -12,3 +12,10 @@ def test_queue_is_durable_and_bounded(tmp_path):
     assert [row[1]["n"] for row in batch] == [2, 3]
     queue.ack([batch[0][0]])
     assert queue.size == 1
+
+
+def test_queue_byte_limit_counts_utf8_bytes(tmp_path):
+    queue = LocalQueue(tmp_path / "queue.db", max_bytes=20, max_rows=10)
+    queue.put({"x": "é" * 10})
+    assert queue.size == 0
+    assert queue.dropped_rows == 1

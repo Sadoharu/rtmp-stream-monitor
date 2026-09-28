@@ -48,7 +48,7 @@ class LocalQueue:
 
     def _trim(self, db: sqlite3.Connection) -> None:
         while True:
-            rows, total = db.execute("SELECT COUNT(*),COALESCE(SUM(LENGTH(payload)),0) FROM outbox").fetchone()
+            rows, total = db.execute("SELECT COUNT(*),COALESCE(SUM(LENGTH(CAST(payload AS BLOB))),0) FROM outbox").fetchone()
             if rows <= self.max_rows and total <= self.max_bytes:
                 break
             oldest = db.execute("SELECT id FROM outbox ORDER BY id LIMIT 1").fetchone()
