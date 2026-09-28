@@ -64,5 +64,9 @@ if ($existingService) {
 }
 & $pythonExe -m rtmp_monitor.windows_service_cli --startup auto install
 if ($LASTEXITCODE -ne 0) { throw "Failed to install the RtmpMonitorAgent Windows service." }
+& sc.exe failure RtmpMonitorAgent reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Failed to configure automatic recovery for the RtmpMonitorAgent Windows service." }
+& sc.exe failureflag RtmpMonitorAgent 1 | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Failed to enable recovery for non-crash service errors." }
 Start-Service -Name RtmpMonitorAgent
 Write-Host "RTMP Monitor Agent service installed and started. Logs: $logDir"

@@ -61,6 +61,11 @@ log_dir: '$logDirYaml'
     & .\install.ps1 -ConfigPath $configPath -PythonPath $pythonExe
     if ($LASTEXITCODE -ne 0) { throw 'The production install.ps1 returned a failure exit code.' }
 
+    & sc.exe qfailure $serviceName
+    if ($LASTEXITCODE -ne 0) { throw 'Windows service recovery actions were not configured.' }
+    & reg.exe query "HKLM\SYSTEM\CurrentControlSet\Services\$serviceName" /v FailureActionsFlag
+    if ($LASTEXITCODE -ne 0) { throw 'Recovery on non-crash service errors was not enabled.' }
+
     $deadline = (Get-Date).AddSeconds(20)
     do {
         $service = Get-Service -Name $serviceName -ErrorAction Stop

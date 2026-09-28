@@ -173,7 +173,7 @@ sudo tail -f /var/log/rtmp-monitor-agent/ffmpeg-stderr.jsonl
 
 ## Оновлення
 
-Збережіть конфігурації, оновіть checkout, потім знову запустіть потрібний installer. Central installer зберігає наявний `/etc/rtmp-monitor/central.yaml`. Windows installer зберігає встановлений agent YAML, якщо не задано `-ReplaceConfig`; Linux agent installer копіює YAML із шляху, переданого в команді. Переконайтеся, що відома резервна копія SQLite перед великим оновленням.
+Збережіть конфігурації, оновіть checkout, потім знову запустіть потрібний installer. Central installer зберігає наявний `/etc/rtmp-monitor/central.yaml`. Windows installer зберігає встановлений agent YAML, якщо не задано `-ReplaceConfig`; Linux agent installer копіює YAML із шляху, переданого в команді. Windows-служба автоматично стартує після reboot і налаштована на повторний запуск після аварійного завершення з паузами 5, 15 і 60 секунд. Переконайтеся, що відома резервна копія SQLite перед великим оновленням.
 
 ## Видалення
 
