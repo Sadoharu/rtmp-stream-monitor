@@ -90,6 +90,8 @@ class AgentFileConfig(BaseModel):
     monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
     network: NetworkConfig = Field(default_factory=NetworkConfig)
     srs_api: SrsApiConfig | None = None
+    ffmpeg_path: Path | None = None
+    ffprobe_path: Path | None = None
     state_dir: Path = Path("./data/agent")
     log_dir: Path = Path("./logs")
 

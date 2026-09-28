@@ -77,8 +77,8 @@ class StreamProbe:
         return self.process is not None and self.process.returncode is None
 
     def command(self) -> list[str]:
-        ffmpeg = shutil.which("ffmpeg")
-        ffprobe = shutil.which("ffprobe")
+        ffmpeg = str(self.config.ffmpeg_path) if self.config.ffmpeg_path else shutil.which("ffmpeg")
+        ffprobe = str(self.config.ffprobe_path) if self.config.ffprobe_path else shutil.which("ffprobe")
         if self.config.agent.profile == "LIGHT":
             if not ffprobe:
                 raise RuntimeError("ffprobe was not found on PATH")
@@ -133,6 +133,7 @@ class StreamProbe:
             creationflags=creationflags,
         )
         self._attach_process_stats()
+        LOG.info("Started %s probe subprocess for stream %s (pid=%s)", self.config.agent.profile, self.stream.id, self.process.pid)
         self.started_mono = time.monotonic()
         for code in ("FFMPEG_DEAD", "STREAM_STALL", "PROGRESS_STALE"):
             self.active_events.pop(code, None)

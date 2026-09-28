@@ -93,6 +93,24 @@ def test_ffmpeg_cpu_sampling_reuses_psutil_process_handle(tmp_path, monkeypatch)
     assert probe.process_rss == 12_345_678
 
 
+def test_stream_probe_uses_configured_executables_when_service_path_is_missing(tmp_path, monkeypatch):
+    ffmpeg = tmp_path / "bin" / "ffmpeg.exe"
+    ffprobe = tmp_path / "bin" / "ffprobe.exe"
+    config = AgentFileConfig.model_validate({
+        "server": {"url": "http://central.example:8090"},
+        "agent": {"name": "client-test", "token": "test-token", "profile": "LIGHT"},
+        "streams": [{"id": "poland", "url": "rtmp://server.example/live/poland"}],
+        "ffmpeg_path": str(ffmpeg),
+        "ffprobe_path": str(ffprobe),
+        "state_dir": str(tmp_path / "state"),
+        "log_dir": str(tmp_path / "logs"),
+    })
+    probe = StreamProbe(config.streams[0], config, LocalQueue(tmp_path / "queue.db", 1024 * 1024, 100))
+    monkeypatch.setattr(agent_module.shutil, "which", lambda _name: None)
+
+    assert probe.command()[0] == str(ffprobe)
+
+
 def test_connection_reset_clears_stale_timestamp_baselines(tmp_path):
     config = AgentFileConfig.model_validate({
         "server": {"url": "http://central.example:8090"},

@@ -24,7 +24,7 @@ if (-not $programDirWasAbsent -or -not $dataDirWasAbsent) {
     throw 'Unexpected pre-existing RTMP Monitor installation directories on the hosted runner.'
 }
 
-$testBin = Join-Path $tempRoot 'bin'
+$testBin = Join-Path $dataDir 'installer-ci-bin'
 $configPath = Join-Path $tempRoot 'agent.yaml'
 $logDir = Join-Path $dataDir 'logs\installer-ci'
 $stateDir = Join-Path $dataDir 'data\installer-ci'
@@ -33,8 +33,8 @@ $originalPath = $env:PATH
 
 try {
     New-Item -ItemType Directory -Path $testBin -Force | Out-Null
-    Set-Content -LiteralPath (Join-Path $testBin 'ffmpeg.cmd') -Value '@echo off' -Encoding ascii
-    Set-Content -LiteralPath (Join-Path $testBin 'ffprobe.cmd') -Value '@echo off' -Encoding ascii
+    Copy-Item -LiteralPath (Join-Path $env:WINDIR 'System32\where.exe') -Destination (Join-Path $testBin 'ffmpeg.exe')
+    Copy-Item -LiteralPath (Join-Path $env:WINDIR 'System32\where.exe') -Destination (Join-Path $testBin 'ffprobe.exe')
     $env:PATH = "$testBin;$env:PATH"
 
     $logDirYaml = $logDir.Replace('\', '/')
@@ -63,8 +63,8 @@ log_dir: '$logDirYaml'
 
     & sc.exe qfailure $serviceName
     if ($LASTEXITCODE -ne 0) { throw 'Windows service recovery actions were not configured.' }
-    & reg.exe query "HKLM\SYSTEM\CurrentControlSet\Services\$serviceName" /v FailureActionsFlag
-    if ($LASTEXITCODE -ne 0) { throw 'Recovery on non-crash service errors was not enabled.' }
+    $failureFlagOutput = (& sc.exe qfailureflag $serviceName 2>&1) -join "`n"
+    if ($LASTEXITCODE -ne 0 -or $failureFlagOutput -notmatch ':\s*1') { throw "Recovery on non-crash service errors was not enabled: $failureFlagOutput" }
 
     $deadline = (Get-Date).AddSeconds(20)
     do {
@@ -76,12 +76,20 @@ log_dir: '$logDirYaml'
         throw "Service did not reach Running state (current: $($service.Status))."
     }
 
+    $installedConfig = Join-Path $dataDir 'agent.yaml'
+    $installedConfigText = Get-Content -LiteralPath $installedConfig -Raw
+    if ($installedConfigText -notmatch [regex]::Escape((Join-Path $testBin 'ffprobe.exe'))) {
+        throw 'The installer did not persist the machine-accessible ffprobe path in the protected config.'
+    }
+
     $deadline = (Get-Date).AddSeconds(15)
-    while (-not (Test-Path -LiteralPath $logPath) -and (Get-Date) -lt $deadline) {
+    $logText = ''
+    while ($logText -notmatch 'Started LIGHT probe subprocess for stream windows-installer-ci' -and (Get-Date) -lt $deadline) {
+        if (Test-Path -LiteralPath $logPath) { $logText = Get-Content -LiteralPath $logPath -Raw }
         Start-Sleep -Seconds 1
     }
-    if (-not (Test-Path -LiteralPath $logPath)) {
-        throw "Service started but did not initialize its log at $logPath."
+    if ($logText -notmatch 'Started LIGHT probe subprocess for stream windows-installer-ci') {
+        throw "Service did not launch the configured ffprobe executable. Log: $logPath"
     }
     Write-Host "Production Windows installer passed with Python $pythonVersion at $pythonExe."
 } catch {

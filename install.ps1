@@ -10,8 +10,21 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 $configPathWasExplicit = $PSBoundParameters.ContainsKey("ConfigPath")
 $resolvedConfig = Resolve-Path -LiteralPath $ConfigPath -ErrorAction SilentlyContinue
 if (($configPathWasExplicit -or $ReplaceConfig) -and -not $resolvedConfig) { throw "Agent config not found at $ConfigPath." }
-if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { throw "FFmpeg is required. Install it with winget (winget install Gyan.FFmpeg) or add ffmpeg.exe to PATH, then retry." }
-if (-not (Get-Command ffprobe -ErrorAction SilentlyContinue)) { throw "ffprobe is required and normally ships with FFmpeg. Add it to PATH, then retry." }
+$ffmpegCommand = Get-Command ffmpeg -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+$ffprobeCommand = Get-Command ffprobe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $ffmpegCommand) { throw "FFmpeg is required. Install it machine-wide (for example, winget install Gyan.FFmpeg) and retry." }
+if (-not $ffprobeCommand) { throw "ffprobe is required and normally ships with FFmpeg. Install it machine-wide and retry." }
+$ffmpegPath = [System.IO.Path]::GetFullPath($ffmpegCommand.Source)
+$ffprobePath = [System.IO.Path]::GetFullPath($ffprobeCommand.Source)
+$userProfilePrefix = [System.IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\') + '\'
+foreach ($toolPath in @($ffmpegPath,$ffprobePath)) {
+    if ([System.IO.Path]::GetExtension($toolPath) -ine ".exe") {
+        throw "FFmpeg tools must resolve to executable .exe files for Windows Services. Found $toolPath."
+    }
+    if ($toolPath.StartsWith($userProfilePrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "FFmpeg tools must be installed outside the user profile because the service runs as LocalSystem. Found $toolPath. Install FFmpeg for all users, then retry."
+    }
+}
 $python = Resolve-RtmpMonitorPython -PythonPath $PythonPath
 $pythonExe = $python.Path
 $pythonVersion = $python.Version
@@ -46,6 +59,19 @@ if (-not $installedConfigExists -or $ReplaceConfig) {
 } elseif ($resolvedConfig) {
     Write-Host "Preserving existing agent config. Use -ReplaceConfig to install the YAML from $ConfigPath."
 }
+$configureTools = @'
+import sys
+from pathlib import Path
+import yaml
+
+path = Path(sys.argv[1])
+config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+config["ffmpeg_path"] = sys.argv[2]
+config["ffprobe_path"] = sys.argv[3]
+path.write_text(yaml.safe_dump(config, sort_keys=False, allow_unicode=True), encoding="utf-8")
+'@
+& $pythonExe -c $configureTools $installedConfig $ffmpegPath $ffprobePath
+if ($LASTEXITCODE -ne 0) { throw "Failed to configure machine-wide FFmpeg paths for the Windows service." }
 $configAcl = New-Object System.Security.AccessControl.FileSecurity
 $configAcl.SetAccessRuleProtection($true, $false)
 $none = [System.Security.AccessControl.InheritanceFlags]::None
