@@ -20,8 +20,9 @@ def test_authenticated_ingest_is_idempotent_and_correlated(tmp_path):
         headers = {"Authorization": f"Bearer {admin}"}
         created_stream = client.post("/api/v1/streams", headers=headers, json={"id": "demo", "name": "demo", "local_url": "rtmp://127.0.0.1/live/demo", "public_url": "rtmp://stream.example.net/live/demo"})
         assert created_stream.status_code == 201
-        unsupported_ingress = client.post("/api/v1/agents", headers=headers, json={"name": "false-ingress", "location": "server", "platform": "Ubuntu", "role": "SERVER_INGRESS", "stream_id": "demo"})
-        assert unsupported_ingress.status_code == 422
+        ingress = client.post("/api/v1/agents", headers=headers, json={"name": "srs-ingress", "location": "server", "platform": "Ubuntu", "role": "SERVER_INGRESS", "stream_id": "demo"})
+        assert ingress.status_code == 201
+        assert ingress.json()["role"] == "SERVER_INGRESS"
         created_agent = client.post("/api/v1/agents", headers=headers, json={"name": "client-win-demo", "location": "studio", "platform": "Windows", "role": "CLIENT", "stream_id": "demo"})
         assert created_agent.status_code == 201
         token = created_agent.json()["token"]

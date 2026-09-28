@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -39,13 +39,6 @@ class AgentCreate(BaseModel):
     platform: str = Field(default="unknown", max_length=64)
     role: str = Field(pattern=r"^(SERVER_INGRESS|SERVER_EGRESS|CLIENT|SOURCE)$")
     stream_id: str
-
-    @field_validator("role")
-    @classmethod
-    def require_supported_observation(cls, value: str) -> str:
-        if value == "SERVER_INGRESS":
-            raise ValueError("No server-specific ingress hook adapter is installed. Use a SOURCE probe on the encoder or SERVER_EGRESS on loopback.")
-        return value
 
 
 class TelemetryItem(BaseModel):
@@ -102,9 +95,12 @@ def _agent_data(agent: Agent, now: datetime, offline_seconds: int, stream_offlin
         state = "NEVER_SEEN"
     else:
         metrics = latest.metrics if latest else {}
-        media_age = metrics.get("last_frame_age")
-        if media_age is None:
-            media_age = metrics.get("last_audio_frame_age")
+        if agent.role == "SERVER_INGRESS":
+            media_age = metrics.get("last_ingress_progress_age", metrics.get("last_frame_age"))
+        else:
+            media_age = metrics.get("last_frame_age")
+            if media_age is None:
+                media_age = metrics.get("last_audio_frame_age")
         ffmpeg_running = metrics.get("ffmpeg_running")
         if telemetry_age is not None and telemetry_age > stream_offline_seconds:
             state = "TELEMETRY_STALE"

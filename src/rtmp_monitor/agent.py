@@ -22,6 +22,7 @@ from .analyzer import FrameAnalyzer, parse_diagnostic_line
 from .config import AgentFileConfig, StreamConfig
 from .network import NetworkTelemetry, clock_status
 from .queue import LocalQueue
+from .srs_ingress import SrsIngressProbe
 
 LOG = logging.getLogger("rtmp_monitor.agent")
 
@@ -582,7 +583,10 @@ class AgentRunner:
         self._agent_cpu_percent = 0.0
         self._agent_rss_bytes = 0
         self._agent_metrics_sampled_at: str | None = None
-        self.probes = [StreamProbe(stream, config, self.outbox, self._shared_metrics) for stream in config.streams]
+        if config.agent.role == "SERVER_INGRESS":
+            self.probes = [SrsIngressProbe(stream, config, self.outbox, self._shared_metrics) for stream in config.streams]
+        else:
+            self.probes = [StreamProbe(stream, config, self.outbox, self._shared_metrics) for stream in config.streams]
         self._last_delivery_warning = 0.0
 
     async def run(self) -> None:

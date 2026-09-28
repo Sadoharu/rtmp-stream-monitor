@@ -21,5 +21,10 @@ network:
   enabled: true
   server_host: stream.example.net
   server_port: 1935
+# For an SRS SERVER_INGRESS probe, use its loopback read-only HTTP API:
+# srs_api:
+#   base_url: http://127.0.0.1:1985
+#   username: probe-user
+#   password: replace-with-secret
 state_dir: C:/ProgramData/RtmpMonitor/data
 log_dir: C:/ProgramData/RtmpMonitor/logs

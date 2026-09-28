@@ -56,7 +56,10 @@ try {
 } finally {
     Remove-Item -LiteralPath $registryRoot -Recurse -Force -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $pythonInstallDir) {
-        Remove-Item -LiteralPath $pythonInstallDir -Force -ErrorAction SilentlyContinue
+        # Windows PowerShell 5.1 Remove-Item can throw NullReferenceException
+        # when deleting a junction. Directory.Delete removes the reparse point
+        # itself, without touching the Python installation it targets.
+        [System.IO.Directory]::Delete($pythonInstallDir, $false)
     }
     if (Test-Path -LiteralPath $testRoot) {
         Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue

@@ -25,7 +25,18 @@ def _errors(observation: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _is_bad(observation: dict[str, Any]) -> bool:
-    return str(observation.get("status", "OK")).upper() in {"WARNING", "CRITICAL", "ERROR"} or bool(_errors(observation))
+    role = str(observation.get("role", "")).upper()
+    status = str(observation.get("status", "OK")).upper()
+    metrics = observation.get("metrics") or {}
+    if role == "SERVER_INGRESS":
+        # An unreachable SRS API means the observation point is unknown, not
+        # that the publisher or incoming media is broken.
+        if metrics.get("srs_api_available") is False:
+            return False
+        if metrics.get("ingress_quality") == "PUBLISHER_COUNTERS_ONLY":
+            return status in {"CRITICAL", "ERROR", "STREAM_OFFLINE", "STREAM_STALLED"} or bool(_errors(observation))
+        return status in {"WARNING", "CRITICAL", "ERROR", "STREAM_OFFLINE", "STREAM_STALLED"} or bool(_errors(observation))
+    return status in {"WARNING", "CRITICAL", "ERROR"} or bool(_errors(observation))
 
 
 def _network_is_bad(observation: dict[str, Any]) -> bool:
@@ -89,9 +100,17 @@ def diagnose_observations(observations: list[dict[str, Any]], media_tolerance_se
             location = "SOURCE / INGEST (the earliest observed point with matching symptoms)"
         affected = involved
     elif bad_egress:
-        clean_ingress_exists = bool(ingress) and not any(_is_bad(item) for item in ingress)
+        available_ingress = [item for item in ingress if (item.get("metrics") or {}).get("srs_api_available") is not False]
+        clean_ingress_exists = bool(available_ingress) and not any(_is_bad(item) for item in available_ingress)
+        ingress_counters_only = clean_ingress_exists and all(
+            (item.get("metrics") or {}).get("ingress_quality") == "PUBLISHER_COUNTERS_ONLY"
+            for item in available_ingress
+        )
         clean_source_exists = bool(sources) and not bad_sources
-        if clean_ingress_exists and (not media["available"] or media["aligned"]):
+        if ingress_counters_only:
+            diagnosis = "RTMP_SERVER_RESTREAM_UNCONFIRMED"
+            location = "SRS HTTP API confirms an active publisher and ingress counters, but it does not validate decoded frames or GOPs; SOURCE / INGEST and SERVER EGRESS cannot yet be separated"
+        elif clean_ingress_exists and (not media["available"] or media["aligned"]):
             diagnosis = "RTMP_SERVER_RESTREAM_PROBLEM"
             location = "RTMP SERVER RESTREAM BETWEEN SERVER_INGRESS AND SERVER_EGRESS"
         elif clean_ingress_exists:

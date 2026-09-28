@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
+from pydantic import AnyHttpUrl, BaseModel, Field, field_validator, model_validator
 
 
 class StreamConfig(BaseModel):
@@ -26,8 +26,8 @@ class AgentConfig(BaseModel):
     @classmethod
     def valid_role(cls, value: str) -> str:
         normalized = value.upper()
-        if normalized not in {"SERVER_EGRESS", "CLIENT", "SOURCE"}:
-            raise ValueError("role must be SERVER_EGRESS, CLIENT, or SOURCE; SERVER_INGRESS requires an RTMP-server hook adapter")
+        if normalized not in {"SERVER_INGRESS", "SERVER_EGRESS", "CLIENT", "SOURCE"}:
+            raise ValueError("role must be SERVER_INGRESS, SERVER_EGRESS, CLIENT, or SOURCE")
         return normalized
 
     @field_validator("profile")
@@ -65,17 +65,38 @@ class NetworkConfig(BaseModel):
     ping_interval: float = Field(default=10.0, ge=2, le=120)
 
 
+class SrsApiConfig(BaseModel):
+    base_url: AnyHttpUrl = Field(default="http://127.0.0.1:1985", validate_default=True)
+    username: str | None = Field(default=None, min_length=1, max_length=256)
+    password: str | None = Field(default=None, min_length=1, max_length=1024)
+
+    @model_validator(mode="after")
+    def credentials_are_paired(self) -> "SrsApiConfig":
+        if self.base_url.username or self.base_url.password:
+            raise ValueError("put SRS HTTP API credentials in username/password, not in base_url")
+        if self.base_url.path not in {"", "/"} or self.base_url.query or self.base_url.fragment:
+            raise ValueError("srs_api base_url must be an origin such as http://127.0.0.1:1985")
+        if self.username is not None and ":" in self.username:
+            raise ValueError("SRS HTTP API Basic Auth username cannot contain a colon")
+        if (self.username is None) != (self.password is None):
+            raise ValueError("srs_api username and password must be configured together")
+        return self
+
+
 class AgentFileConfig(BaseModel):
     server: ServerConnection
     agent: AgentConfig
     streams: list[StreamConfig] = Field(min_length=1, max_length=1)
     monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
     network: NetworkConfig = Field(default_factory=NetworkConfig)
+    srs_api: SrsApiConfig | None = None
     state_dir: Path = Path("./data/agent")
     log_dir: Path = Path("./logs")
 
     @model_validator(mode="after")
     def fill_network_target(self) -> "AgentFileConfig":
+        if self.agent.role == "SERVER_INGRESS" and self.srs_api is None:
+            raise ValueError("SERVER_INGRESS requires srs_api configuration")
         if not self.network.server_host:
             from urllib.parse import urlparse
 

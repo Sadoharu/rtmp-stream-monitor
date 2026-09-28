@@ -1,17 +1,17 @@
 # RTMP Stream Diagnostic Monitor
 
-Центральний сервіс збирає телеметрію від окремих probe-агентів і об'єднує симптоми в incidents із полем **Probable location**. Реалізація розрахована на безперервний запуск: systemd або Windows Service керує агентом, агент контролює FFmpeg/ffprobe, тримає обмежену локальну SQLite-чергу, а центральний сервіс зберігає telemetry та incidents у SQLite через SQLAlchemy.
+Центральний сервіс збирає телеметрію від окремих probe-агентів і об'єднує симптоми в incidents із полем **Probable location**. Реалізація розрахована на безперервний запуск: systemd або Windows Service керує агентом, який аналізує потік через FFmpeg/ffprobe або читає SRS ingress counters, тримає обмежену локальну SQLite-чергу, а центральний сервіс зберігає telemetry та incidents у SQLite через SQLAlchemy.
 
 ## Спостережні точки та межі діагностики
 
 - `SOURCE` — агент на encoder/source читає вихідний RTMP до RTMP-сервера. Це найближче практичне спостереження до того, що encoder передає в мережу.
 - `SERVER_EGRESS` — агент на Ubuntu RTMP-сервері читає потік через `rtmp://127.0.0.1:1935/...`. Це перевіряє локальну віддачу сервера.
 - `CLIENT` — віддалений агент читає публічний RTMP URL. Підтримуються Ubuntu та Windows і кілька клієнтських агентів.
-- `SERVER_INGRESS` потребує прямої інтеграції з конкретним сервером або ingest hook. Цей репозиторій не знає, який RTMP server реалізований на Ubuntu, тому відхиляє створення такого generic probe і не заявляє loopback reader як справжнє ingress-спостереження. Поки що використовуйте source-side `SOURCE` probe або показуйте стан `SERVER_EGRESS_LOCAL`.
+- `SERVER_INGRESS` для SRS читає read-only `/api/v1/streams` endpoint на самому сервері й показує publisher activity, ingress bytes/bitrate, frame counters та codec metadata. RTMP handshake на тестовому потоці визначив SRS 6.0.184. HTTP API підтверджує publisher і лічильники, але не декодує кадри та не перевіряє GOP; якщо egress зламаний за активного SRS publisher, діагноз лишається непідтвердженим. Для frame-level перевірки додайте окремий `SOURCE` або майбутній decoded ingress adapter. Loopback FFmpeg probe завжди має роль `SERVER_EGRESS`, а не ingress.
 
 Для клієнтського probe вкажіть публічний URL потоку, наприклад `rtmp://stream.example.net:1935/live/demo`. Для локального виходу сервера можна використати `rtmp://127.0.0.1:1935/live/demo`. Перевірте, що порт central API `8090` доступний агентам.
 
-Correlation використовує останні спостереження кожної ролі у 20-секундному wall-clock вікні та перевіряє розкид media PTS (default tolerance 5 секунд). PTS lag від локального egress до клієнта підтримує діагноз network path, коли обидва probes працюють у `LIGHT` mode; у `DEEP` mode lag може бути наслідком повільного decode. Encoder-side probe сам по собі не доводить, що ingest на сервері був чистим: для цього потрібен реальний `SERVER_INGRESS` hook. За його відсутності діагноз явно лишається непідтвердженим. Це ймовірне місце, не математичний доказ: RTMP/TCP не переносить наскрізний ідентифікатор кадру, тому точна прив'язка до одного media packet між різними probes обмежена.
+Correlation використовує останні спостереження кожної ролі у 20-секундному wall-clock вікні та перевіряє розкид media PTS (default tolerance 5 секунд). PTS lag від локального egress до клієнта підтримує діагноз network path, коли обидва probes працюють у `LIGHT` mode; у `DEEP` mode lag може бути наслідком повільного decode. SRS SERVER_INGRESS counters підтверджують publisher і рух байтів, але не доводять, що вхідні кадри декодуються чи мають коректний GOP. Для frame-level source/media діагнозу використовуйте SOURCE probe або decoded ingress adapter; без такої перевірки місце збою лишається непідтвердженим. Це ймовірне місце, не математичний доказ: RTMP/TCP не переносить наскрізний ідентифікатор кадру, тому точна прив'язка до одного media packet між різними probes обмежена.
 
 Докладніше про обраний аналіз та обмеження — [docs/architecture.md](docs/architecture.md).
 
@@ -46,7 +46,28 @@ sudo -u rtmp-monitor /opt/rtmp-monitor/.venv/bin/rtmp-monitor show-admin-token -
 sudo ./install.sh agent /root/demo-agent.yaml
 ```
 
-Для server-local probe виберіть роль `SERVER_EGRESS`; для віддаленого клієнта — `CLIENT`. Для source-side probe додайте в stream поле source/encoder URL і виберіть роль `SOURCE`.
+Для server-local FFmpeg probe виберіть роль `SERVER_EGRESS`; для віддаленого клієнта — `CLIENT`. Для source-side probe додайте в stream поле source/encoder URL і виберіть роль `SOURCE`. На SRS-хості виберіть `SERVER_INGRESS`, щоб читати SRS HTTP API counters.
+
+Для SRS увімкніть локальний read-only HTTP API у його конфігурації, збережіть `raw_api` вимкненим і не відкривайте порт `1985` назовні:
+
+```conf
+http_api {
+    enabled on;
+    listen 127.0.0.1:1985;
+    raw_api {
+        enabled off;
+    }
+}
+```
+
+Застосуйте конфігурацію звичним для цього SRS deployment способом і перевірте API на сервері:
+
+```bash
+curl -fsS http://127.0.0.1:1985/api/v1/versions
+curl -fsS 'http://127.0.0.1:1985/api/v1/streams/?count=500'
+```
+
+Dashboard створить `srs_api.base_url: http://127.0.0.1:1985`. Якщо на SRS ввімкнена HTTP API Basic Auth, додайте в YAML probe пару `srs_api.username` і `srs_api.password`; не додавайте credentials до URL. Конфігурація зберігається з обмеженими правами.
 
 ```bash
 sudo systemctl status rtmp-monitor-agent

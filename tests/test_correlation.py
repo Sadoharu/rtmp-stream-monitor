@@ -138,6 +138,41 @@ def test_missing_ingress_is_explicitly_unconfirmed():
     assert "INGRESS OBSERVATION IS MISSING" in result["probable_location"]
 
 
+def test_srs_publisher_counters_do_not_confirm_clean_media_before_restream():
+    ingress = report("SERVER_INGRESS", "srs-ingress")
+    ingress["metrics"].update({
+        "srs_api_available": True,
+        "ingress_quality": "PUBLISHER_COUNTERS_ONLY",
+        "ingress_active": True,
+        "ingress_recv_bytes": 10000,
+        "ingress_recv_kbps_30s": 5000,
+    })
+    egress = report("SERVER_EGRESS", "egress", "CRITICAL", broken())
+
+    result = diagnose_observations([ingress, egress])
+
+    assert result["diagnosis"] == "RTMP_SERVER_RESTREAM_UNCONFIRMED"
+    assert "does not validate decoded frames or GOPs" in result["probable_location"]
+
+
+def test_unavailable_srs_api_is_not_misdiagnosed_as_source_failure():
+    ingress = report("SERVER_INGRESS", "srs-ingress", "WARNING", [{"code": "SRS_API_UNAVAILABLE", "severity": "WARNING"}])
+    ingress["metrics"]["srs_api_available"] = False
+    egress = report("SERVER_EGRESS", "egress", "CRITICAL", broken())
+
+    result = diagnose_observations([ingress, egress])
+
+    assert result["diagnosis"] == "UPSTREAM_OR_SERVER_UNCONFIRMED"
+    assert "TRUE SERVER_INGRESS OBSERVATION IS MISSING" in result["probable_location"]
+
+
+def test_unavailable_srs_api_alone_does_not_create_a_stream_incident():
+    ingress = report("SERVER_INGRESS", "srs-ingress", "WARNING", [{"code": "SRS_API_UNAVAILABLE", "severity": "WARNING"}])
+    ingress["metrics"]["srs_api_available"] = False
+
+    assert diagnose_observations([ingress]) is None
+
+
 def test_media_timestamp_mismatch_downgrades_source_correlation():
     source = report("SOURCE", "encoder", "CRITICAL", broken())
     egress = report("SERVER_EGRESS", "server", "CRITICAL", broken())
