@@ -1,0 +1,25 @@
+server:
+  url: http://central.example.net:8090
+agent:
+  id: ""
+  name: client-win-demo
+  location: studio
+  role: CLIENT
+  token: ""
+  profile: DEEP
+streams:
+  - id: demo
+    url: rtmp://stream.example.net:1935/live/demo
+monitoring:
+  heartbeat_interval: 5
+  progress_interval: 1
+  freeze_threshold: 2
+  silence_threshold: 3
+  stall_threshold: 5
+  dead_threshold: 15
+network:
+  enabled: true
+  server_host: stream.example.net
+  server_port: 1935
+state_dir: C:/ProgramData/RtmpMonitor/data
+log_dir: C:/ProgramData/RtmpMonitor/logs

@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rtmp-stream-monitor"
+version = "0.1.0"
+description = "Continuous RTMP probe telemetry and incident correlation"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.30,<1",
+  "SQLAlchemy>=2.0,<3",
+  "PyYAML>=6.0,<7",
+  "psutil>=6.0,<8",
+]
+
+[project.optional-dependencies]
+windows-service = ["pywin32>=306; platform_system == 'Windows'"]
+test = ["pytest>=8.0,<9", "httpx>=0.27,<1"]
+
+[project.scripts]
+rtmp-monitor = "rtmp_monitor.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+rtmp_monitor = ["static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

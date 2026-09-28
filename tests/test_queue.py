@@ -1,0 +1,14 @@
+from rtmp_monitor.queue import LocalQueue
+
+
+def test_queue_is_durable_and_bounded(tmp_path):
+    queue = LocalQueue(tmp_path / "queue.db", max_bytes=1024 * 1024, max_rows=2)
+    queue.put({"n": 1})
+    queue.put({"n": 2})
+    queue.put({"n": 3})
+    assert queue.size == 2
+    assert queue.dropped_rows == 1
+    batch = queue.peek(10)
+    assert [row[1]["n"] for row in batch] == [2, 3]
+    queue.ack([batch[0][0]])
+    assert queue.size == 1

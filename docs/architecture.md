@@ -1,0 +1,42 @@
+# Architecture and diagnostic limits
+
+## Observation chain
+
+Each registered agent observes one stream URL and has a role, host/platform, location, and unique bearer token. It sends one-second samples through a five-second heartbeat batch. The API stores raw samples, updates a per-stream incident, and exposes current state and history to the authenticated dashboard.
+
+```text
+encoder-side SOURCE probe ── RTMP ingest/server ── SERVER_EGRESS_LOCAL ── TCP path ── CLIENT probes
+```
+
+`SERVER_EGRESS` connects to the RTMP server's loopback URL. The dashboard labels it `SERVER_EGRESS_LOCAL`. It answers “what does the server give a local reader?” It cannot prove exactly what arrived at the server. This application does not include a generic server ingest hook because the specific RTMP server implementation was not provided. Generic `SERVER_INGRESS` registration is rejected; a true ingress point requires an implementation-specific callback/metrics adapter. Until then, deploy a `SOURCE` probe on the encoder if possible. The incident classifier returns an explicitly unconfirmed upstream/server diagnosis when the ingress observation is missing.
+
+## Media analysis profiles
+
+`DEEP` runs FFmpeg with null output and decodes each frame. `showinfo` supplies frame PTS, keyframe flag and I/P/B picture type; the frame analyzer counts keyframes and calculates observed GOP intervals. It flags an initial keyframe absence at the configured threshold or five seconds by default, then adapts the threshold to 2.5 times the median observed GOP with a five-second floor. The filter chain also runs `freezedetect`, `silencedetect`, and audio `ashowinfo`. Known FFmpeg decode diagnostics are parsed from stderr. No re-encoding occurs.
+
+`LIGHT` runs `ffprobe -show_packets` and reads key packet flags, packet sizes, PTS/DTS, packet arrival and GOP interval without decoding. It cannot identify every codec-specific IDR distinction, detect corrupt decoded pictures, or run freeze/silence filters. In both profiles, an I-frame/key packet is not guaranteed to be an independently decodable IDR for every codec/container.
+
+Deep decode CPU cost depends on codec, resolution, frame rate, and hardware. The agent reports its FFmpeg process CPU and RSS; validate before enabling deep probes at scale. A dedicated second ffprobe process is not run alongside deep mode, avoiding a second full stream reader.
+
+## Correlation and incident confidence
+
+The backend compares the latest sample from each probe over a 20-second wall-clock window, then uses media PTS spread as a second alignment check when multiple probes report PTS. The default tolerance is five seconds and is configurable. Matching source/ingress errors point to `SOURCE_OR_INGEST_PROBLEM`; a clean true ingress plus broken local egress points to `RTMP_SERVER_RESTREAM_PROBLEM`; healthy local egress and a broken client point to `NETWORK_PATH_PROBLEM` when transport counters support it, otherwise `CLIENT_PROBLEM`. A media PTS lag also supports a network diagnosis when both compared probes use `LIGHT` packet inspection; in deep mode PTS can lag because decoding is behind, so it is not treated as transport proof. A clean encoder-side `SOURCE` probe does not prove server ingress, so server egress failures remain explicitly unconfirmed until a server hook is installed.
+
+RTMP over TCP does not expose a frame identity shared by independent decoders. Wall-clock offset, buffering, retransmission and path asymmetry limit root-cause certainty. The dashboard therefore presents a probable location, symptoms, samples and diagnostic excerpts instead of claiming proof.
+
+## Transport and time sources
+
+- Linux uses `ss -ti` flow information when present and ICMP echo timing separately.
+- Windows uses `Get-NetTCPStatistics` retransmit counter deltas (system-wide) and `Get-NetTCPConnection` state. Windows does not provide an equivalent per-flow retransmission count through this implementation.
+- ICMP loss/RTT is missing when the target drops ping. No capture ring is enabled.
+- Agent NTP state comes from the operating system. Offset reported from central HTTP Date is coarse (one-second date precision) and only approximate; it does not replace NTP.
+
+## Durability and retention
+
+Each agent first commits a compact JSON sample to a WAL-enabled, bounded SQLite outbox. A 401 is treated as a configuration fault and remains queued; transient network or server failures retry. The central API uses SQLAlchemy sessions with SQLite by default and is compatible with PostgreSQL URLs. Samples have stable IDs so retries do not create duplicates.
+
+Raw samples are retained for seven days. At hourly maintenance, complete older one-minute buckets are summarized per agent (numeric avg/min/max/last, worst status, and event counts) before raw rows are deleted. Aggregates are retained for 90 days; incidents for 180 days. Correlation stores up to 60 seconds of nearby samples and recent stderr excerpts per incident.
+
+## Security boundaries
+
+Dashboard/API administration uses a generated bearer token saved in a local token file; each agent has a separately stored SHA-256 token hash and can only submit for its registered stream. The first dashboard token is not exposed through an unauthenticated endpoint. Keep the central API on a trusted network or behind TLS/reverse proxy and restrict TCP/8090 to probe and management addresses. YAML contains agent bearer tokens and must be protected at rest.
