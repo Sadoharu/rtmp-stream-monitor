@@ -130,18 +130,23 @@ jobs:
             if (Test-Path -LiteralPath $logPath) {
               Get-Content -LiteralPath $logPath -Tail 100
             }
-            foreach ($channel in @('Application', 'System')) {
+            $eventQueries = @(
+              @{ LogName = 'Application'; ProviderName = 'Python Service'; StartTime = (Get-Date).AddMinutes(-5) },
+              @{ LogName = 'System'; ProviderName = 'Service Control Manager'; Id = @(7000, 7009, 7011, 7023, 7024, 7031, 7034); StartTime = (Get-Date).AddMinutes(-5) }
+            )
+            foreach ($query in $eventQueries) {
               try {
-                $events = Get-WinEvent -FilterHashtable @{ LogName = $channel; StartTime = (Get-Date).AddMinutes(-5) } -MaxEvents 300 -ErrorAction Stop
+                $events = @(Get-WinEvent -FilterHashtable $query -MaxEvents 100 -ErrorAction Stop)
+                Write-Host "Found $($events.Count) matching $($query.LogName) events."
                 foreach ($event in $events) {
                   $eventXml = $event.ToXml()
-                  if ($event.ProviderName -match 'Python|RtmpMonitorAgent' -or $eventXml -match 'RtmpMonitorAgent|pythonservice|PythonService') {
-                    Write-Host "Event $channel $($event.TimeCreated) $($event.ProviderName) ID $($event.Id)"
+                  if ($eventXml -match 'RtmpMonitorAgent|Python Service|pythonservice|PythonService') {
+                    Write-Host "Event $($query.LogName) $($event.TimeCreated) $($event.ProviderName) ID $($event.Id)"
                     Write-Host $eventXml
                   }
                 }
               } catch {
-                Write-Host "Could not read $channel event log: $($_.Exception.Message)"
+                Write-Host "Could not query $($query.LogName) event log: $($_.Exception.Message)"
               }
             }
             & sc.exe qc $serviceName
