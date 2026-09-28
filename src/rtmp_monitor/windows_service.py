@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import threading
 
@@ -36,14 +37,15 @@ class RtmpMonitorAgentService(win32serviceutil.ServiceFramework):
         win32event.SetEvent(self.stop_event)
 
     def SvcDoRun(self):
-        import servicemanager
-
-        servicemanager.LogInfoMsg("RTMP Monitor Agent service starting")
         config_path = os.environ.get("RTMP_MONITOR_CONFIG", r"C:\ProgramData\RtmpMonitor\agent.yaml")
         config = load_agent_config(config_path)
         configure_logging(config.log_dir, agent_name=config.agent.name)
-        asyncio.run(self._run_agent(config))
-        servicemanager.LogInfoMsg("RTMP Monitor Agent service stopped")
+        logger = logging.getLogger(__name__)
+        logger.info("RTMP Monitor Agent service starting")
+        try:
+            asyncio.run(self._run_agent(config))
+        finally:
+            logger.info("RTMP Monitor Agent service stopped")
 
     async def _run_agent(self, config):
         self.loop = asyncio.get_running_loop()
