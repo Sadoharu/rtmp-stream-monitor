@@ -77,6 +77,57 @@ def test_windows_retransmits_with_independent_rtt_spike_support_network_fault():
     assert result["diagnosis"] == "NETWORK_PATH_PROBLEM"
 
 
+def test_one_lost_icmp_echo_does_not_overattribute_a_client_media_error():
+    result = diagnose_observations([
+        report("SERVER_EGRESS", "egress"),
+        report("CLIENT", "client", "CRITICAL", broken("FREEZE_START"), {
+            "provider": "windows", "tcp_retransmissions": 0, "rtt_ms": 4,
+            "packet_loss_percent": 100 / 3, "icmp_probe_count": 3, "icmp_reply_count": 2,
+            "tcp_state": "ESTABLISHED",
+        }),
+    ])
+
+    assert result["diagnosis"] == "CLIENT_PROBLEM"
+
+
+def test_substantial_partial_icmp_loss_supports_network_fault():
+    result = diagnose_observations([
+        report("SERVER_EGRESS", "egress"),
+        report("CLIENT", "client", "CRITICAL", broken("FREEZE_START"), {
+            "provider": "windows", "tcp_retransmissions": 0, "rtt_ms": None,
+            "packet_loss_percent": 200 / 3, "icmp_probe_count": 3, "icmp_reply_count": 1,
+            "tcp_state": "ESTABLISHED",
+        }),
+    ])
+
+    assert result["diagnosis"] == "NETWORK_PATH_PROBLEM"
+
+
+def test_no_icmp_replies_alone_do_not_prove_network_fault():
+    result = diagnose_observations([
+        report("SERVER_EGRESS", "egress"),
+        report("CLIENT", "client", "CRITICAL", broken("FREEZE_START"), {
+            "provider": "windows", "tcp_retransmissions": 0, "rtt_ms": None,
+            "packet_loss_percent": None, "icmp_probe_count": 3, "icmp_reply_count": 0,
+            "tcp_state": "ESTABLISHED",
+        }),
+    ])
+
+    assert result["diagnosis"] == "CLIENT_PROBLEM"
+
+
+def test_legacy_icmp_loss_without_reply_count_is_not_network_proof():
+    result = diagnose_observations([
+        report("SERVER_EGRESS", "egress"),
+        report("CLIENT", "client", "CRITICAL", broken("FREEZE_START"), {
+            "provider": "windows", "tcp_retransmissions": 0, "rtt_ms": None,
+            "packet_loss_percent": 100, "tcp_state": "ESTABLISHED",
+        }),
+    ])
+
+    assert result["diagnosis"] == "CLIENT_PROBLEM"
+
+
 def test_tcp_state_sample_before_media_recovery_does_not_blame_network():
     client = report("CLIENT", "client", "WARNING", broken("PTS_REGRESSION", "WARNING"), {
         "tcp_state": "not-established",

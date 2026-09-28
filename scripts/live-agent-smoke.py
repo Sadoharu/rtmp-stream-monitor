@@ -102,6 +102,7 @@ def main() -> int:
                 "Network telemetry: "
                 f"{network.get('provider')} RTT={network.get('rtt_ms')} ms; "
                 f"loss={network.get('packet_loss_percent')}%; "
+                f"ICMP={network.get('icmp_reply_count')}/{network.get('icmp_probe_count')} ({network.get('icmp_status')}); "
                 f"TCP retransmits={network.get('tcp_retransmissions')}; "
                 f"state={network.get('tcp_state')}"
             )

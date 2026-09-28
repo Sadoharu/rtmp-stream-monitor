@@ -51,6 +51,9 @@ def test_windows_ping_uses_structured_dotnet_output(monkeypatch):
     assert timeout == 5
     assert result["rtt_ms"] == 12.5
     assert result["packet_loss_percent"] == pytest.approx(100 / 3)
+    assert result["icmp_probe_count"] == 3
+    assert result["icmp_reply_count"] == 2
+    assert result["icmp_status"] == "PARTIAL"
 
 
 def test_windows_ping_reports_loss_when_echo_is_unanswered(monkeypatch):
@@ -60,4 +63,46 @@ def test_windows_ping_reports_loss_when_echo_is_unanswered(monkeypatch):
 
     result = telemetry._ping()
 
-    assert result == {"rtt_ms": None, "packet_loss_percent": 100.0}
+    assert result == {
+        "rtt_ms": None, "packet_loss_percent": None,
+        "icmp_probe_count": 3, "icmp_reply_count": 0, "icmp_status": "NO_REPLY",
+    }
+
+
+def test_linux_ping_forces_stable_locale_and_marks_no_replies_unknown(monkeypatch):
+    calls = []
+
+    def fake_run(args, timeout=2.0, env=None):
+        calls.append((args, timeout, env))
+        return "3 packets transmitted, 0 received, 100% packet loss"
+
+    monkeypatch.setattr(network.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(network, "_run", fake_run)
+    result = NetworkTelemetry("192.0.2.1", 1935)._ping()
+
+    assert calls[0][2]["LC_ALL"] == "C"
+    assert calls[0][2]["LANG"] == "C"
+    assert result["rtt_ms"] is None
+    assert result["packet_loss_percent"] is None
+    assert result["icmp_probe_count"] == 3
+    assert result["icmp_reply_count"] == 0
+    assert result["icmp_status"] == "NO_REPLY"
+
+
+def test_linux_ping_reports_substantial_partial_loss(monkeypatch):
+    calls = []
+
+    def fake_run(args, timeout=2.0, env=None):
+        calls.append((args, timeout, env))
+        return "64 bytes from 192.0.2.1: time=11.2 ms\n3 packets transmitted, 1 received, 66% packet loss"
+
+    monkeypatch.setattr(network.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(network, "_run", fake_run)
+    result = NetworkTelemetry("192.0.2.1", 1935)._ping()
+
+    assert result["rtt_ms"] == 11.2
+    assert result["packet_loss_percent"] == pytest.approx(200 / 3)
+    assert result["icmp_probe_count"] == 3
+    assert result["icmp_reply_count"] == 1
+    assert result["icmp_status"] == "PARTIAL"
+    assert calls[0][2]["LC_ALL"] == "C"

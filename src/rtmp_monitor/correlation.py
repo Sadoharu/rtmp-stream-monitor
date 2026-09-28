@@ -49,6 +49,17 @@ def _network_is_bad(observation: dict[str, Any]) -> bool:
     tcp_state_is_bad = bool(tcp_state and tcp_state not in {"ESTABLISHED", "ESTAB", "UNKNOWN"})
     sample_age = network.get("sample_age_seconds")
     frame_age = metrics.get("last_frame_age")
+    icmp_loss = network.get("packet_loss_percent")
+    icmp_replies = network.get("icmp_reply_count")
+    # A single dropped echo out of three is weak evidence; zero replies can
+    # simply mean the target blocks ICMP. Only substantial, partial ICMP loss
+    # supports a network diagnosis on its own.
+    icmp_loss_is_strong = (
+        isinstance(icmp_loss, (int, float))
+        and icmp_loss >= 50
+        and isinstance(icmp_replies, (int, float))
+        and icmp_replies > 0
+    )
     if (
         tcp_state_is_bad
         and isinstance(sample_age, (int, float))
@@ -60,7 +71,7 @@ def _network_is_bad(observation: dict[str, Any]) -> bool:
         tcp_state_is_bad = False
     return bool(
         (network.get("provider") != "windows" and isinstance(retransmits, (int, float)) and retransmits > 0)
-        or (isinstance(network.get("packet_loss_percent"), (int, float)) and network["packet_loss_percent"] > 0)
+        or icmp_loss_is_strong
         or (isinstance(network.get("rtt_ms"), (int, float)) and network["rtt_ms"] > 100)
         or tcp_state_is_bad
     )

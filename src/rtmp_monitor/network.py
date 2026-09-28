@@ -30,7 +30,11 @@ class NetworkTelemetry:
         now = time.monotonic()
         if not self.enabled or not self.host:
             return {"available": False, "reason": "disabled or no server_host configured"}
-        result: dict[str, Any] = {"available": True, "rtt_ms": None, "packet_loss_percent": None, "tcp_retransmissions": None, "tcp_state": None, "provider": platform.system().lower()}
+        result: dict[str, Any] = {
+            "available": True, "rtt_ms": None, "packet_loss_percent": None,
+            "icmp_probe_count": None, "icmp_reply_count": None, "icmp_status": "UNAVAILABLE",
+            "tcp_retransmissions": None, "tcp_state": None, "provider": platform.system().lower(),
+        }
         result.update(self._ping())
         system = platform.system().lower()
         if system == "linux":
@@ -74,18 +78,34 @@ class NetworkTelemetry:
                     raise ValueError("invalid ping counters")
                 return {
                     "rtt_ms": float(rtt) if isinstance(rtt, (int, float)) else None,
-                    "packet_loss_percent": (sent - received) / sent * 100,
+                    "packet_loss_percent": (sent - received) / sent * 100 if received else None,
+                    "icmp_probe_count": sent,
+                    "icmp_reply_count": received,
+                    "icmp_status": "NO_REPLY" if received == 0 else "PARTIAL" if received < sent else "OK",
                 }
             except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-                return {"rtt_ms": None, "packet_loss_percent": None}
+                return {
+                    "rtt_ms": None, "packet_loss_percent": None, "icmp_probe_count": None,
+                    "icmp_reply_count": None, "icmp_status": "UNAVAILABLE",
+                }
 
         args = ["ping", "-n", "-c", "3", "-W", "1", self.host]
-        output = _run(args, timeout=5)
+        command_env = os.environ.copy()
+        command_env["LC_ALL"] = "C"
+        command_env["LANG"] = "C"
+        output = _run(args, timeout=5, env=command_env)
         rtt = re.search(r"(?:time[=<]|Average\s*=\s*)(\d+(?:\.\d+)?)\s*ms", output, re.I)
         linux_stats = re.search(r"(\d+)\s+packets transmitted,\s*(\d+)\s+(?:packets )?received", output, re.I)
-        stats = linux_stats
-        loss = (int(stats.group(1)) - int(stats.group(2))) / int(stats.group(1)) * 100 if stats and int(stats.group(1)) else None
-        return {"rtt_ms": float(rtt.group(1)) if rtt else None, "packet_loss_percent": loss}
+        sent = int(linux_stats.group(1)) if linux_stats else None
+        received = int(linux_stats.group(2)) if linux_stats else None
+        loss = (sent - received) / sent * 100 if sent and received else None
+        return {
+            "rtt_ms": float(rtt.group(1)) if rtt else None,
+            "packet_loss_percent": loss,
+            "icmp_probe_count": sent,
+            "icmp_reply_count": received,
+            "icmp_status": "UNAVAILABLE" if sent is None or received is None else "NO_REPLY" if received == 0 else "PARTIAL" if received < sent else "OK",
+        }
 
     def _linux_socket_stats(self) -> dict[str, Any]:
         output = _run(["ss", "-tin", "dst", self.host, "dport", "=", f":{self.port}"], timeout=2)
