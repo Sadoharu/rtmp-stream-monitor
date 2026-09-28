@@ -158,3 +158,11 @@ rtmp-monitor server --config config/central.dev.yaml
 ```
 
 Перевірки classifier симулюють source, restream, network-path та client-only failures. Live acceptance test треба виконати на тих Ubuntu/Windows hosts і через той самий RTMP шлях, де система працюватиме цілодобово.
+
+Щоб перевірити активний RTMP URL через локальний тимчасовий central collector і один deep probe:
+
+```powershell
+python scripts/live-agent-smoke.py "rtmp://HOST:1935/live/STREAM" --seconds 30 --network
+```
+
+Команда друкує codec, роздільність, frame/keyframe counters, timestamp anomalies та мережеву телеметрію. `--network` додає RTT/ICMP, втрати пакетів і доступні платформні TCP counters. Цей smoke test запускає probe в поточному процесі й не перевіряє встановлену Windows-службу чи повний acceptance сценарій із перериванням потоку.

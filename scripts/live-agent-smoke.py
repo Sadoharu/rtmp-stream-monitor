@@ -13,6 +13,7 @@ import time
 import urllib.request
 import uuid
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import uvicorn
 
@@ -43,7 +44,13 @@ def main() -> int:
     parser.add_argument("url", help="RTMP URL to probe")
     parser.add_argument("--seconds", type=float, default=15)
     parser.add_argument("--profile", choices=("DEEP", "LIGHT"), default="DEEP")
+    parser.add_argument("--network", action="store_true", help="collect RTT, packet loss, and platform TCP counters")
     args = parser.parse_args()
+    target = urlsplit(args.url)
+    if not target.hostname:
+        parser.error("URL must include a host")
+    default_port = {"rtmp": 1935, "rtmps": 443}.get(target.scheme.lower(), 1935)
+    target_port = target.port or default_port
     with tempfile.TemporaryDirectory(prefix="rtmp-live-smoke-") as temporary:
         root = Path(temporary)
         with socket.socket() as sock:
@@ -70,7 +77,13 @@ def main() -> int:
                 "agent": {"id": agent["id"], "name": agent["name"], "location": "smoke-test", "role": "CLIENT", "token": agent["token"], "profile": args.profile},
                 "streams": [{"id": stream_id, "url": args.url}],
                 "monitoring": {"heartbeat_interval": 2, "progress_interval": 1, "freeze_threshold": 2, "stall_threshold": 5},
-                "network": {"enabled": False}, "state_dir": root / "agent-data", "log_dir": root / "agent-logs",
+                "network": {
+                    "enabled": args.network,
+                    "server_host": target.hostname,
+                    "server_port": target_port,
+                    "ping_interval": 2,
+                },
+                "state_dir": root / "agent-data", "log_dir": root / "agent-logs",
             })
             asyncio.run(run_probe(agent_config, args.seconds))
             data = request(central_url, "/api/v1/dashboard", admin)
@@ -84,6 +97,14 @@ def main() -> int:
             print(f"Central samples queued: {metrics.get('queue_rows')}")
             print(f"Last video/audio frame age: {metrics.get('last_frame_age')} / {metrics.get('last_audio_frame_age')} s")
             print(f"Last FFmpeg progress age: {metrics.get('last_progress_age')} s")
+            network = metrics.get("network", {})
+            print(
+                "Network telemetry: "
+                f"{network.get('provider')} RTT={network.get('rtt_ms')} ms; "
+                f"loss={network.get('packet_loss_percent')}%; "
+                f"TCP retransmits={network.get('tcp_retransmissions')}; "
+                f"state={network.get('tcp_state')}"
+            )
             active = [item for item in data.get("incidents", []) if item.get("active") and item.get("stream_id") == stream_id]
             active_events = sorted({event.get("code", "") for incident in active for symptom in incident.get("symptoms", []) for event in symptom.get("events", []) if event.get("code")})
             print(f"Active incident diagnoses: {', '.join(item.get('diagnosis', '') for item in active) or 'none'}")
