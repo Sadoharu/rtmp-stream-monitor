@@ -601,7 +601,14 @@ class AgentRunner:
             now = time.monotonic()
             if now - self._last_network_mono >= self.config.network.ping_interval:
                 await self._refresh_environment_metrics()
-            payloads = self.outbox.peek(100)
+            try:
+                payloads = self.outbox.peek(100)
+            except Exception:
+                if now - self._last_delivery_warning >= 30:
+                    LOG.exception("Unable to read local telemetry outbox; probes continue and delivery will retry")
+                    self._last_delivery_warning = now
+                await asyncio.sleep(self.config.monitoring.heartbeat_interval)
+                continue
             if payloads:
                 items = []
                 ids = []
@@ -623,13 +630,19 @@ class AgentRunner:
                     self.outbox.ack(ids)
                 except urllib.error.HTTPError as exc:
                     if now - self._last_delivery_warning >= 30:
-                        LOG.error("Central server rejected telemetry (HTTP %s); %d rows remain queued. Check the agent token and stream registration.", exc.code, self.outbox.size)
+                        LOG.error("Central server rejected telemetry (HTTP %s); %s rows remain queued. Check the agent token and stream registration.", exc.code, self._outbox_size_for_log())
                         self._last_delivery_warning = now
                 except Exception as exc:
                     if now - self._last_delivery_warning >= 30:
-                        LOG.warning("Central server unavailable; %d telemetry records remain queued: %s", self.outbox.size, exc)
+                        LOG.warning("Central server unavailable; %s telemetry records remain queued: %s", self._outbox_size_for_log(), exc)
                         self._last_delivery_warning = now
             await asyncio.sleep(self.config.monitoring.heartbeat_interval)
+
+    def _outbox_size_for_log(self) -> int | str:
+        try:
+            return self.outbox.size
+        except Exception:
+            return "an unknown number of"
 
     async def _refresh_environment_metrics(self) -> None:
         try:

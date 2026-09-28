@@ -1,3 +1,5 @@
+import asyncio
+import sqlite3
 import time
 from types import SimpleNamespace
 
@@ -110,6 +112,47 @@ def test_connection_reset_clears_stale_timestamp_baselines(tmp_path):
     assert probe.stream_metadata["last_media_dts"] == 0.0
     assert probe.analyzer.keyframe_count == 2
     assert probe.analyzer.frame_count == 3
+
+
+def test_sender_retries_outbox_read_errors_without_exiting(tmp_path):
+    config = AgentFileConfig.model_validate({
+        "server": {"url": "http://central.example:8090"},
+        "agent": {"name": "client-test", "token": "test-token"},
+        "streams": [{"id": "poland", "url": "rtmp://server.example/live/poland"}],
+        "monitoring": {"heartbeat_interval": 1},
+        "network": {"enabled": False},
+        "state_dir": str(tmp_path / "state"),
+        "log_dir": str(tmp_path / "logs"),
+    })
+    runner = AgentRunner(config)
+    runner._last_network_mono = time.monotonic()
+    calls = 0
+    second_read = asyncio.Event()
+
+    def flaky_peek(_limit):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise sqlite3.OperationalError("database is locked")
+        if calls == 2:
+            second_read.set()
+        return []
+
+    runner.outbox.peek = flaky_peek
+
+    async def exercise():
+        sender = asyncio.create_task(runner._sender_loop())
+        try:
+            await asyncio.wait_for(second_read.wait(), timeout=3)
+        finally:
+            sender.cancel()
+            try:
+                await sender
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(exercise())
+    assert calls >= 2
 
 
 def test_post_uses_central_receive_timestamp_with_request_uncertainty(tmp_path, monkeypatch):
