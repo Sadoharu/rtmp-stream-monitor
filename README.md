@@ -167,6 +167,12 @@ Windows installer discovery regression test:
 
 Він перевіряє знаходження Python через реєстр і `Program Files`, а також блокує інтерпретатор із user profile для Windows-служби.
 
+Повний smoke test production Windows installer потребує elevated PowerShell. Він встановлює та запускає Windows-службу, перевіряє створення логу, а потім видаляє тестову службу та створені каталоги. CI запускає його на чистому Windows runner:
+
+```powershell
+.\tests\smoke_windows_installer.ps1
+```
+
 Щоб перевірити активний RTMP URL через локальний тимчасовий central collector і один deep probe:
 
 ```powershell

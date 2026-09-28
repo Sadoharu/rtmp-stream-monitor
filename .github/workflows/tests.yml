@@ -10,6 +10,18 @@ permissions:
   contents: read
 
 jobs:
+  windows-installer:
+    name: Windows production installer / Python 3.12
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Run production Windows installer
+        shell: pwsh
+        run: .\tests\smoke_windows_installer.ps1
+
   pytest:
     name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
     runs-on: ${{ matrix.os }}
