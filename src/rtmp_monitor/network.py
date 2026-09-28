@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import platform
 import re
@@ -45,13 +46,45 @@ class NetworkTelemetry:
 
     def _ping(self) -> dict[str, Any]:
         is_windows = platform.system().lower() == "windows"
-        args = ["ping", "-n", "3", "-w", "1000", self.host] if is_windows else ["ping", "-n", "-c", "3", "-W", "1", self.host]
+        if is_windows:
+            # Use structured .NET output instead of parsing localized ping.exe text.
+            script = (
+                "$ping=New-Object System.Net.NetworkInformation.Ping; $times=@(); "
+                "try { for ($i=0; $i -lt 3; $i++) { "
+                "try { $reply=$ping.Send($env:RTMP_MONITOR_PING_ADDRESS,1000); "
+                "if ($reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) "
+                "{ $times += [int64]$reply.RoundtripTime } } catch {} } } finally { $ping.Dispose() }; "
+                "$rtt=$null; if ($times.Count -gt 0) "
+                "{ $rtt=[double](($times | Measure-Object -Average).Average) }; "
+                "[pscustomobject]@{sent=3;received=$times.Count;rtt_ms=$rtt}|ConvertTo-Json -Compress"
+            )
+            command_env = os.environ.copy()
+            command_env["RTMP_MONITOR_PING_ADDRESS"] = self.host
+            output = _run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                timeout=5,
+                env=command_env,
+            )
+            try:
+                result = json.loads(output)
+                sent = int(result["sent"])
+                received = int(result["received"])
+                rtt = result.get("rtt_ms")
+                if sent <= 0 or received < 0 or received > sent:
+                    raise ValueError("invalid ping counters")
+                return {
+                    "rtt_ms": float(rtt) if isinstance(rtt, (int, float)) else None,
+                    "packet_loss_percent": (sent - received) / sent * 100,
+                }
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                return {"rtt_ms": None, "packet_loss_percent": None}
+
+        args = ["ping", "-n", "-c", "3", "-W", "1", self.host]
         output = _run(args, timeout=5)
         rtt = re.search(r"(?:time[=<]|Average\s*=\s*)(\d+(?:\.\d+)?)\s*ms", output, re.I)
-        windows_stats = re.search(r"Sent\s*=\s*(\d+),\s*Received\s*=\s*(\d+),\s*Lost\s*=\s*(\d+)", output, re.I)
         linux_stats = re.search(r"(\d+)\s+packets transmitted,\s*(\d+)\s+(?:packets )?received", output, re.I)
-        stats = windows_stats or linux_stats
-        loss = (int(stats.group(3)) / int(stats.group(1)) * 100 if windows_stats else (int(stats.group(1)) - int(stats.group(2))) / int(stats.group(1)) * 100) if stats and int(stats.group(1)) else None
+        stats = linux_stats
+        loss = (int(stats.group(1)) - int(stats.group(2))) / int(stats.group(1)) * 100 if stats and int(stats.group(1)) else None
         return {"rtt_ms": float(rtt.group(1)) if rtt else None, "packet_loss_percent": loss}
 
     def _linux_socket_stats(self) -> dict[str, Any]:
