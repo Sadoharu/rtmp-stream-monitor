@@ -44,11 +44,16 @@ jobs:
           $configPath = Join-Path $configDir 'agent.yaml'
           $logDir = Join-Path $configDir 'logs\windows-ci'
           $stateDir = Join-Path $configDir 'data\windows-ci'
-          $venvDir = Join-Path $env:TEMP 'rtmp-monitor-service-ci\.venv'
+          $programDir = Join-Path $env:ProgramFiles 'RTMPMonitor-CI'
+          $venvDir = Join-Path $programDir '.venv'
           $venvPython = Join-Path $venvDir 'Scripts\python.exe'
+          $logPath = Join-Path $logDir 'rtmp-monitor.jsonl'
 
           if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
             throw "Unexpected pre-existing $serviceName service on the hosted runner."
+          }
+          if (Test-Path -LiteralPath $programDir) {
+            throw "Unexpected pre-existing CI install directory at $programDir."
           }
           if (Test-Path -LiteralPath $configPath) {
             throw "Unexpected pre-existing test config at $configPath."
@@ -75,11 +80,14 @@ jobs:
           "@
 
           New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+          New-Item -ItemType Directory -Force -Path $programDir | Out-Null
+          Copy-Item -Recurse -Force (Join-Path (Get-Location) 'src') (Join-Path $programDir 'src')
+          Copy-Item -Force (Join-Path (Get-Location) 'pyproject.toml') $programDir
           Set-Content -LiteralPath $configPath -Value $testConfig -Encoding utf8
           try {
             python -m venv $venvDir
             if ($LASTEXITCODE -ne 0) { throw 'Could not create the service test venv.' }
-            & $venvPython -m pip install -e ".[windows-service]"
+            & $venvPython -m pip install $programDir "pywin32>=306"
             if ($LASTEXITCODE -ne 0) { throw 'Could not install the agent in the service test venv.' }
             python -m win32.scripts.pywin32_postinstall -install -quiet
             if ($LASTEXITCODE -ne 0) { throw 'pywin32 machine-wide post-install setup failed.' }
@@ -106,6 +114,25 @@ jobs:
               throw 'The Windows service ran without initializing the agent log.'
             }
             Write-Host 'Windows service started and initialized the probe agent.'
+          }
+          catch {
+            Write-Host 'Windows service smoke-test diagnostics:'
+            if (Test-Path -LiteralPath $logPath) {
+              Get-Content -LiteralPath $logPath -Tail 100
+            }
+            Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = (Get-Date).AddMinutes(-5) } -ErrorAction SilentlyContinue |
+              Where-Object { $_.ProviderName -match 'Python|RtmpMonitorAgent' -or $_.Message -match 'RtmpMonitorAgent|pythonservice|PythonService' } |
+              Select-Object -First 20 TimeCreated, ProviderName, Id, Message |
+              Format-List
+            $serviceKey = "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName"
+            if (Test-Path -LiteralPath $serviceKey) {
+              Get-ItemProperty -LiteralPath $serviceKey | Select-Object ImagePath
+              $pythonClassKey = Join-Path $serviceKey 'PythonClass'
+              if (Test-Path -LiteralPath $pythonClassKey) {
+                (Get-Item -LiteralPath $pythonClassKey).GetValue('')
+              }
+            }
+            throw
           }
           finally {
             if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
