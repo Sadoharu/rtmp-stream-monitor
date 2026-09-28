@@ -88,7 +88,8 @@ def test_batch_correlates_transient_freeze_before_recovery(tmp_path):
         assert response.status_code == 200
         incidents = client.get("/api/v1/incidents", headers=headers).json()
         assert len(incidents) == 1
-        assert incidents[0]["diagnosis"] == "CLIENT_PROBLEM"
+        assert incidents[0]["diagnosis"] == "CLIENT_PATH_UNCONFIRMED"
+        assert "SERVER_EGRESS IS NOT OBSERVED" in incidents[0]["probable_location"]
         assert incidents[0]["active"] is False
         assert incidents[0]["symptoms"][0]["events"][0]["code"] == "FREEZE_START"
 

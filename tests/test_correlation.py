@@ -92,7 +92,8 @@ def test_stale_ffmpeg_progress_is_included_in_client_symptoms():
     result = diagnose_observations([
         report("CLIENT", "client", "WARNING", broken("PROGRESS_STALE", "WARNING")),
     ])
-    assert result["diagnosis"] == "CLIENT_PROBLEM"
+    assert result["diagnosis"] == "CLIENT_PATH_UNCONFIRMED"
+    assert "SERVER_EGRESS IS NOT OBSERVED" in result["probable_location"]
     assert result["symptoms"][0]["events"][0]["code"] == "PROGRESS_STALE"
 
 

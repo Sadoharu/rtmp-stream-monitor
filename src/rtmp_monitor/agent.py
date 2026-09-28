@@ -43,6 +43,7 @@ class StreamProbe:
         self.outbox = outbox
         self.shared_metrics = shared_metrics
         self.process: asyncio.subprocess.Process | None = None
+        self._process_stats: psutil.Process | None = None
         self.started_mono = time.monotonic()
         self.last_progress_mono: float | None = None
         self.last_packet_mono: float | None = None
@@ -129,6 +130,7 @@ class StreamProbe:
             stderr=asyncio.subprocess.PIPE,
             creationflags=creationflags,
         )
+        self._attach_process_stats()
         self.started_mono = time.monotonic()
         for code in ("FFMPEG_DEAD", "STREAM_STALL", "PROGRESS_STALE"):
             self.active_events.pop(code, None)
@@ -159,6 +161,10 @@ class StreamProbe:
                     for task in readers:
                         task.cancel()
             await asyncio.gather(wait_task, monitor_task, *readers, return_exceptions=True)
+            if self.process and self.process.returncode is not None:
+                self._process_stats = None
+                self.process_cpu = 0.0
+                self.process_rss = 0
 
     async def _read_stdout(self) -> None:
         assert self.process and self.process.stdout
@@ -374,15 +380,32 @@ class StreamProbe:
                 return
             self._publish(self._snapshot(now))
 
-    def _update_process_usage(self) -> None:
+    def _attach_process_stats(self) -> None:
+        self._process_stats = None
+        self.process_cpu = 0.0
+        self.process_rss = 0
         if not self.process or self.process.returncode is not None or not self.process.pid:
             return
         try:
-            child = psutil.Process(self.process.pid)
-            self.process_cpu = round(child.cpu_percent(interval=None), 2)
-            self.process_rss = child.memory_info().rss
+            self._process_stats = psutil.Process(self.process.pid)
+            self._process_stats.cpu_percent(interval=None)
+            self.process_rss = self._process_stats.memory_info().rss
         except (psutil.Error, OSError):
-            pass
+            self._process_stats = None
+
+    def _update_process_usage(self) -> None:
+        if not self.process or self.process.returncode is not None or not self.process.pid:
+            return
+        if self._process_stats is None:
+            self._attach_process_stats()
+            return
+        try:
+            self.process_cpu = round(self._process_stats.cpu_percent(interval=None), 2)
+            self.process_rss = self._process_stats.memory_info().rss
+        except (psutil.Error, OSError):
+            self._process_stats = None
+            self.process_cpu = 0.0
+            self.process_rss = 0
 
     def _snapshot(self, now: float) -> dict[str, Any]:
         last_media = self.last_frame_mono if self.config.agent.profile == "DEEP" else (self.last_video_packet_mono if self._video_stream_indices else self.last_packet_mono)

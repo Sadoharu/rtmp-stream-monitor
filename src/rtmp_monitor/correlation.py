@@ -107,6 +107,9 @@ def diagnose_observations(observations: list[dict[str, Any]], media_tolerance_se
         elif any(_has_unattributed_windows_retransmits(item) for item in bad_clients):
             diagnosis = "NETWORK_PATH_UNCONFIRMED"
             location = "CLIENT PATH MAY BE DEGRADED, BUT THE WINDOWS RETRANSMIT COUNTER IS HOST-WIDE AND CANNOT BE ATTRIBUTED TO THIS RTMP FLOW"
+        elif not egress:
+            diagnosis = "CLIENT_PATH_UNCONFIRMED"
+            location = "CLIENT OBSERVATION IS DEGRADED, BUT SERVER_EGRESS IS NOT OBSERVED; CLIENT, SERVER RESTREAM, AND UPSTREAM CAUSES CANNOT BE SEPARATED"
         else:
             diagnosis = "CLIENT_PROBLEM"
             location = "CLIENT RECEIVE / DECODER (network counters do not show a transport fault)"
