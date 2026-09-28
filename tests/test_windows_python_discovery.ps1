@@ -53,6 +53,23 @@ try {
         if ($_.Exception.Message -notmatch 'installed only for the current user') { throw }
     }
     Write-Host 'Per-user Python rejection: passed'
+
+    function py {
+        $global:LASTEXITCODE = 0
+        Write-Output $perUserPath
+    }
+    try {
+        $null = Resolve-RtmpMonitorPython `
+            -ProgramFilesRoot (Join-Path $testRoot 'NoProgramFiles') `
+            -RegistryRoots @() `
+            -UserProfilePath $perUserRoot
+        throw 'The Python launcher per-user fallback was accepted for the Windows service.'
+    } catch {
+        if ($_.Exception.Message -notmatch 'installed only for the current user') { throw }
+    } finally {
+        Remove-Item Function:\py -ErrorAction SilentlyContinue
+    }
+    Write-Host 'Per-user Python launcher fallback rejection: passed'
 } finally {
     Remove-Item -LiteralPath $registryRoot -Recurse -Force -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $pythonInstallDir) {
