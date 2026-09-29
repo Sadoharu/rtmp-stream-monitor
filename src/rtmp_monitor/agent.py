@@ -60,6 +60,7 @@ class StreamProbe:
         self.last_event_mono: dict[str, float] = {}
         self.reconnect_count = 0
         self.last_restart_reason = "initial start"
+        self._last_run_duration = 0.0
         self.process_cpu = 0.0
         self.process_rss = 0
         self.stream_metadata: dict[str, Any] = {}
@@ -116,12 +117,13 @@ class StreamProbe:
             self.reconnect_count += 1
             self._event("FFMPEG_RESTART", "WARNING", {"reason": self.last_restart_reason, "restart_count": self.reconnect_count})
             self._publish(self._snapshot(time.monotonic()))
-            if time.monotonic() - self.started_mono >= 60:
+            if self._last_run_duration >= 60:
                 delay = self.config.monitoring.reconnect_initial
             await asyncio.sleep(delay)
             delay = min(maximum, delay * 2)
 
     async def _run_one(self) -> None:
+        self._last_run_duration = 0.0
         self._reset_connection_state()
         cmd = self.command()
         LOG.info("Starting %s probe for stream %s", self.config.agent.profile, self.stream.id)
@@ -135,6 +137,7 @@ class StreamProbe:
         self._attach_process_stats()
         LOG.info("Started %s probe subprocess for stream %s (pid=%s)", self.config.agent.profile, self.stream.id, self.process.pid)
         self.started_mono = time.monotonic()
+        process_started_mono = self.started_mono
         for code in ("FFMPEG_DEAD", "STREAM_STALL", "PROGRESS_STALE"):
             self.active_events.pop(code, None)
         self.last_progress_mono = self.started_mono
@@ -168,6 +171,8 @@ class StreamProbe:
                 self._process_stats = None
                 self.process_cpu = 0.0
                 self.process_rss = 0
+            if process_started_mono is not None:
+                self._last_run_duration = max(0.0, time.monotonic() - process_started_mono)
 
     async def _read_stdout(self) -> None:
         assert self.process and self.process.stdout
