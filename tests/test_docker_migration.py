@@ -84,6 +84,13 @@ def test_migration_is_idempotent_and_does_not_overwrite_named_volume_state(tmp_p
     assert sqlite3.connect(tmp_path / "volume-data" / "central.db").execute("SELECT COUNT(*) FROM incidents").fetchone()[0] == 1
 
 
+def test_migration_keeps_empty_named_volumes_populated(tmp_path):
+    _initialize(tmp_path)
+
+    assert (tmp_path / "volume-data" / ".rtmp-monitor-volume").is_file()
+    assert (tmp_path / "volume-logs" / ".rtmp-monitor-volume").is_file()
+
+
 def test_migration_refuses_legacy_database_without_its_admin_token(tmp_path):
     legacy = tmp_path / "legacy-data"
     legacy.mkdir()

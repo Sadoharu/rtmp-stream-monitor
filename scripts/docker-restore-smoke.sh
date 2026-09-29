@@ -44,6 +44,13 @@ case "$(uname -s)" in
     service_gid=10001
     ;;
 esac
+service_uid="${RTMP_MONITOR_SMOKE_UID:-$service_uid}"
+service_gid="${RTMP_MONITOR_SMOKE_GID:-$service_gid}"
+if [[ ! "$service_uid" =~ ^[0-9]+$ || ! "$service_gid" =~ ^[0-9]+$ ]]; then
+  echo "Compose smoke UID/GID must be non-negative integers." >&2
+  exit 1
+fi
+echo "Compose smoke service identity: $service_uid:$service_gid"
 mkdir -p secrets backups smoke-input/data smoke-input/logs
 : > secrets/openai_api_key
 chmod 600 secrets/openai_api_key
@@ -62,6 +69,11 @@ echo "Building central image for isolated Compose project $project_name."
 docker compose build central
 echo "Initializing the isolated named volumes."
 bash ./scripts/docker-init-volumes.sh
+echo "Checking initialized volumes as the configured service user."
+docker compose run --rm --no-deps -T --user 0 --entrypoint python central -c \
+  "import os; expected=($service_uid,$service_gid); paths=('/data','/logs'); owners=tuple((os.stat(path).st_uid,os.stat(path).st_gid) for path in paths); print('Initialized volume owners:', owners); assert all(owner==expected for owner in owners), f'expected volume owner {expected}, got {owners}'"
+docker compose run --rm --no-deps -T --entrypoint python central -c \
+  'import os; print(f"Runtime identity: {os.geteuid()}:{os.getegid()}"); paths=("/data", "/logs"); [(lambda p: (open(p, "w").close(), os.unlink(p)))(os.path.join(path, ".write-check")) for path in paths]; print("SQLite and log volume write checks passed.")'
 docker compose up -d central
 
 base_url="http://127.0.0.1:$port"

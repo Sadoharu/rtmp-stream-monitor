@@ -95,10 +95,14 @@ def _copy_legacy_logs(source: Path, destination: Path) -> int:
 
 
 def _set_volume_ownership(paths: tuple[Path, ...], uid: int, gid: int) -> None:
-    if not hasattr(os, "chown"):
-        return
     for root in paths:
         root.mkdir(parents=True, exist_ok=True)
+        # Keep an otherwise-empty Docker named volume populated. Without a
+        # marker, Docker may copy the image directory (owned by 10001) into it
+        # again when the next container mounts the volume.
+        (root / ".rtmp-monitor-volume").touch(exist_ok=True)
+        if not hasattr(os, "chown"):
+            continue
         for current, dirs, files in os.walk(root):
             os.chown(current, uid, gid)
             for name in dirs + files:
