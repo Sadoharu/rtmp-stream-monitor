@@ -4,6 +4,19 @@ param(
     [switch]$ReplaceConfig
 )
 $ErrorActionPreference = "Stop"
+function Invoke-RtmpMonitorNativeCommand {
+    param([Parameter(Mandatory)][scriptblock]$Command)
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $Command 2>&1
+        $script:rtmpMonitorNativeExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+}
+
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw "Run PowerShell as Administrator and retry .\install.ps1" }
 . (Join-Path $PSScriptRoot 'scripts\windows-python.ps1')
@@ -52,8 +65,8 @@ Copy-Item -Recurse -Force $sourceDir $stagedSourceDir
 if (Test-Path -LiteralPath $installedSourceDir) { Remove-Item -LiteralPath $installedSourceDir -Recurse -Force }
 Move-Item -LiteralPath $stagedSourceDir -Destination $installedSourceDir
 Copy-Item -Force (Join-Path $repo "pyproject.toml") $programDir
-& $pythonExe -m pip install --upgrade $programDir 2>&1
-if ($LASTEXITCODE -ne 0) { throw "Failed to install RTMP Monitor into the machine-wide Python environment." }
+Invoke-RtmpMonitorNativeCommand { & $pythonExe -m pip install --upgrade $programDir }
+if ($script:rtmpMonitorNativeExitCode -ne 0) { throw "Failed to install RTMP Monitor into the machine-wide Python environment." }
 if (-not $installedConfigExists -or $ReplaceConfig) {
     Copy-Item -Force $resolvedConfig.Path $installedConfig
 } elseif ($resolvedConfig) {
@@ -74,8 +87,8 @@ $configureToolsPath = Join-Path $env:TEMP ("rtmp-monitor-config-" + [guid]::NewG
 [System.IO.File]::WriteAllText($configureToolsPath, $configureTools, [System.Text.Encoding]::ASCII)
 $configureToolsExitCode = 1
 try {
-    & $pythonExe $configureToolsPath $installedConfig $ffmpegPath $ffprobePath 2>&1
-    $configureToolsExitCode = $LASTEXITCODE
+    Invoke-RtmpMonitorNativeCommand { & $pythonExe $configureToolsPath $installedConfig $ffmpegPath $ffprobePath }
+    $configureToolsExitCode = $script:rtmpMonitorNativeExitCode
 } finally {
     Remove-Item -LiteralPath $configureToolsPath -Force -ErrorAction SilentlyContinue
 }
@@ -88,19 +101,19 @@ $allow = [System.Security.AccessControl.AccessControlType]::Allow
 $configAcl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule("SYSTEM","FullControl",$none,$noProp,$allow)))
 $configAcl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule("Administrators","FullControl",$none,$noProp,$allow)))
 Set-Acl -LiteralPath $installedConfig -AclObject $configAcl
-& $pythonExe -m pip install --upgrade "pywin32>=306" 2>&1
-if ($LASTEXITCODE -ne 0) { throw "Failed to install pywin32 into the machine-wide Python environment." }
-& $pythonExe -m win32.scripts.pywin32_postinstall -install -quiet 2>&1
-if ($LASTEXITCODE -ne 0) { throw "pywin32 machine-wide post-install setup failed." }
+Invoke-RtmpMonitorNativeCommand { & $pythonExe -m pip install --upgrade "pywin32>=306" }
+if ($script:rtmpMonitorNativeExitCode -ne 0) { throw "Failed to install pywin32 into the machine-wide Python environment." }
+Invoke-RtmpMonitorNativeCommand { & $pythonExe -m win32.scripts.pywin32_postinstall -install -quiet }
+if ($script:rtmpMonitorNativeExitCode -ne 0) { throw "pywin32 machine-wide post-install setup failed." }
 if ($existingService) {
-    & $pythonExe -m rtmp_monitor.windows_service_cli remove 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "Could not remove the previous RtmpMonitorAgent service." }
+    Invoke-RtmpMonitorNativeCommand { & $pythonExe -m rtmp_monitor.windows_service_cli remove }
+    if ($script:rtmpMonitorNativeExitCode -ne 0) { throw "Could not remove the previous RtmpMonitorAgent service." }
 }
-& $pythonExe -m rtmp_monitor.windows_service_cli --startup auto install 2>&1
-if ($LASTEXITCODE -ne 0) { throw "Failed to install the RtmpMonitorAgent Windows service." }
-& sc.exe failure RtmpMonitorAgent reset= 86400 actions= restart/5000/restart/15000/restart/60000 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "Failed to configure automatic recovery for the RtmpMonitorAgent Windows service." }
-& sc.exe failureflag RtmpMonitorAgent 1 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "Failed to enable recovery for non-crash service errors." }
+Invoke-RtmpMonitorNativeCommand { & $pythonExe -m rtmp_monitor.windows_service_cli --startup auto install }
+if ($script:rtmpMonitorNativeExitCode -ne 0) { throw "Failed to install the RtmpMonitorAgent Windows service." }
+Invoke-RtmpMonitorNativeCommand { & sc.exe failure RtmpMonitorAgent reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null }
+if ($script:rtmpMonitorNativeExitCode -ne 0) { throw "Failed to configure automatic recovery for the RtmpMonitorAgent Windows service." }
+Invoke-RtmpMonitorNativeCommand { & sc.exe failureflag RtmpMonitorAgent 1 | Out-Null }
+if ($script:rtmpMonitorNativeExitCode -ne 0) { throw "Failed to enable recovery for non-crash service errors." }
 Start-Service -Name RtmpMonitorAgent
 Write-Host "RTMP Monitor Agent service installed and started. Logs: $logDir"
