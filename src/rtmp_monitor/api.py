@@ -8,13 +8,14 @@ import secrets
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from math import ceil
 from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import Float, case, cast, func, or_, select, union
 from sqlalchemy.orm import Session
 
 from . import __version__
@@ -358,6 +359,69 @@ def create_app(config: CentralFileConfig | None = None, database_url: str | None
                                "status": item.status, "metrics": item.metrics, "events": item.events})
                 last_by_agent[agent.id] = observed
         return output
+
+    @app.get("/api/v1/timeline")
+    def timeline(stream_id: str, hours: int = Query(default=6, ge=1, le=168), _admin: bool = Depends(require_admin), session: Session = Depends(get_session)):
+        if not session.get(Stream, stream_id):
+            raise HTTPException(status_code=404, detail="Stream not found")
+        cutoff = utcnow() - timedelta(hours=hours)
+        conditions = (Telemetry.stream_id == stream_id, Telemetry.observed_at >= cutoff)
+        probe_count = session.scalar(
+            select(func.count(func.distinct(Telemetry.agent_id))).where(*conditions)
+        ) or 0
+        bucket_seconds = max(10, ceil(hours * 3600 * max(probe_count, 1) / 50_000))
+        dialect = session.get_bind().dialect.name
+        if dialect == "sqlite":
+            epoch = cast(func.strftime("%s", Telemetry.observed_at), Float)
+            def network_metric(name: str):
+                return cast(func.json_extract(Telemetry.metrics, f"$.network.{name}"), Float)
+        elif dialect == "postgresql":
+            epoch = func.extract("epoch", Telemetry.observed_at)
+            def network_metric(name: str):
+                return cast(Telemetry.metrics["network"][name].as_string(), Float)
+        else:
+            raise HTTPException(status_code=501, detail=f"Timeline sampling is not supported for database dialect {dialect}")
+
+        bucket = func.floor(epoch / bucket_seconds)
+        status_rank = case(
+            (Telemetry.status.in_(("CRITICAL", "ERROR", "STREAM_OFFLINE", "STREAM_STALLED", "AGENT_OFFLINE")), 2),
+            (Telemetry.status == "WARNING", 1),
+            else_=0,
+        )
+        ranked_status = select(
+            Telemetry.id.label("telemetry_id"),
+            func.row_number().over(
+                partition_by=(Telemetry.agent_id, bucket),
+                order_by=(status_rank.desc(), Telemetry.observed_at.desc()),
+            ).label("sample_rank"),
+        ).where(*conditions).subquery()
+        sampled_ids = select(ranked_status.c.telemetry_id).where(ranked_status.c.sample_rank == 1)
+
+        retransmits = network_metric("tcp_retransmissions")
+        packet_loss = network_metric("packet_loss_percent")
+        rtt = network_metric("rtt_ms")
+        network_problem = or_(retransmits > 0, packet_loss >= 50, rtt > 100)
+        network_score = case((network_problem, 1), else_=0)
+        ranked_network = select(
+            Telemetry.id.label("telemetry_id"),
+            func.row_number().over(
+                partition_by=(Telemetry.agent_id, bucket),
+                order_by=(network_score.desc(), Telemetry.observed_at.desc()),
+            ).label("sample_rank"),
+        ).where(*conditions, network_problem).subquery()
+        network_ids = select(ranked_network.c.telemetry_id).where(ranked_network.c.sample_rank == 1)
+        event_ids = select(Telemetry.id).where(*conditions, func.json_array_length(Telemetry.events) > 0)
+        selected_ids = union(sampled_ids, network_ids, event_ids)
+        rows = session.execute(
+            select(Telemetry, Agent).join(Agent, Telemetry.agent_id == Agent.id)
+            .where(Telemetry.stream_id == stream_id, Telemetry.id.in_(selected_ids))
+            .order_by(Telemetry.observed_at.asc())
+        ).all()
+        return [
+            {"timestamp": _datetime(item.observed_at).isoformat(), "agent": agent.name, "role": agent.role,
+             "status": item.status, "metrics": item.metrics, "events": item.events}
+            for item, agent in rows
+        ]
 
     @app.post("/api/v1/admin/retention")
     def retention(_admin: bool = Depends(require_admin), session: Session = Depends(get_session)):

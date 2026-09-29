@@ -133,7 +133,7 @@ Dashboard після створення probe один раз показує г�
 
 ## Dashboard та incidents
 
-Головний екран показує стан кожного агента окремо від стану потоку, заявлений input FPS, окрему швидкість обробки FFmpeg, codec, bitrate, frame age, keyframe/GOP, decode errors, CPU/RAM, RTT і transport counters. Швидкість FFmpeg може бути вищою або нижчою за частоту джерела й не є FPS потоку. Timeline синхронізується за wall-clock часом і містить telemetry за останні шість годин. Клік на incident відкриває symptoms, timeline-контекст і останні суттєві рядки FFmpeg stderr.
+Головний екран показує стан кожного агента окремо від стану потоку, заявлений input FPS, окрему швидкість обробки FFmpeg, codec, bitrate, frame age, keyframe/GOP, decode errors, CPU/RAM, RTT і transport counters. Швидкість FFmpeg може бути вищою або нижчою за частоту джерела й не є FPS потоку. Timeline синхронізується за wall-clock часом і містить telemetry за останні шість годин. Статуси зменшуються окремо для кожного probe, а event та суттєві network samples зберігаються з точним часом; маркери клікабельні й відкривають пов'язаний incident або деталі sample. Клік на incident відкриває symptoms, timeline-контекст і останні суттєві рядки FFmpeg stderr.
 
 Incident створюється із симптомів, видимих у відповідних probes. Система використовує `Probable location` там, де точну причину неможливо довести. Агент offline показується окремо від stream offline/stalled.
 

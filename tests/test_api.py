@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from rtmp_monitor.api import create_app
 from rtmp_monitor.config import CentralFileConfig
+from rtmp_monitor.db import Telemetry
 
 
 def test_authenticated_ingest_is_idempotent_and_correlated(tmp_path):
@@ -191,6 +192,60 @@ def test_out_of_order_different_diagnosis_does_not_open_second_active_incident(t
     assert len(incidents) == 1
     assert incidents[0]["diagnosis"] == "CLIENT_PROBLEM"
     assert incidents[0]["opened_at"] == current_at.isoformat()
+
+
+def test_timeline_downsamples_per_probe_and_preserves_events_and_network_samples(tmp_path):
+    admin_file = tmp_path / "admin.token"
+    app = create_app(CentralFileConfig(
+        database_url=f"sqlite:///{(tmp_path / 'central.db').as_posix()}",
+        admin_token_file=admin_file,
+    ))
+    admin = admin_file.read_text(encoding="utf-8").strip()
+    with TestClient(app) as client:
+        headers = {"Authorization": f"Bearer {admin}"}
+        client.post("/api/v1/streams", headers=headers, json={"id": "demo", "name": "demo"})
+        created_agent = client.post("/api/v1/agents", headers=headers, json={
+            "name": "client", "location": "studio", "platform": "Windows",
+            "role": "CLIENT", "stream_id": "demo",
+        })
+        agent_id = created_agent.json()["id"]
+        second_agent = client.post("/api/v1/agents", headers=headers, json={
+            "name": "client-2", "location": "studio-2", "platform": "Ubuntu",
+            "role": "CLIENT", "stream_id": "demo",
+        })
+        now = datetime.now(timezone.utc)
+        bucket_epoch = int(now.timestamp() // 10) * 10 - 120
+        bucket_start = datetime.fromtimestamp(bucket_epoch, timezone.utc)
+        samples = []
+        for target_id, target_name in ((agent_id, "client"), (second_agent.json()["id"], "client-2")):
+            for second in range(30):
+                status = "WARNING" if target_name == "client" and second == 12 else "CRITICAL" if target_name == "client" and second == 22 else "OK"
+                events = [{"code": "FREEZE_START", "severity": "WARNING", "details": {}}] if target_name == "client" and second == 23 else []
+                metrics = {"network": {"provider": "windows", "tcp_retransmissions": 2}} if target_name == "client" and second == 24 else {}
+                samples.append(Telemetry(
+                    id=f"timeline-sample-{target_name}-{second}", agent_id=target_id, stream_id="demo",
+                    observed_at=bucket_start + timedelta(seconds=second), received_at=now,
+                    status=status, metrics=metrics, events=events, context={},
+                ))
+        with app.state.sessions() as session:
+            session.add_all(samples)
+            session.commit()
+
+        response = client.get("/api/v1/timeline?stream_id=demo&hours=6", headers=headers)
+
+    assert response.status_code == 200
+    timeline = response.json()
+    assert len(timeline) == 8
+    assert sum(item["agent"] == "client-2" for item in timeline) == 3
+    timeline = [item for item in timeline if item["agent"] == "client"]
+    seconds = {
+        round((datetime.fromisoformat(item["timestamp"]) - bucket_start).total_seconds()): item
+        for item in timeline
+    }
+    assert seconds[12]["status"] == "WARNING"
+    assert seconds[22]["status"] == "CRITICAL"
+    assert seconds[23]["events"][0]["code"] == "FREEZE_START"
+    assert seconds[24]["metrics"]["network"]["tcp_retransmissions"] == 2
 
 
 def test_batch_correlates_transient_freeze_before_recovery(tmp_path):
