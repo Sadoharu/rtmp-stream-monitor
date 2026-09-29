@@ -59,6 +59,9 @@ jobs:
     needs: windows-agent-package
     steps:
       - uses: actions/checkout@v7
+      - name: Check WinGet-missing install guidance
+        shell: powershell
+        run: .\tests\test_windows_dependency_guidance.ps1
       - uses: actions/download-artifact@v4
         with:
           name: windows-agent-package

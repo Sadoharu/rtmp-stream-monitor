@@ -33,7 +33,7 @@
 
 На GitHub Actions для `main` commit `a052931249bc253cfebc151ee1052bb8d5569d01` усі job-и `Windows production installer` для Python 3.12, 3.13 і 3.14 завершилися успішно; також пройшли Windows test/service lifecycle job-и на цих версіях та Ubuntu/Python 3.12. Це підтверджує реєстрацію, запуск і ініціалізацію агента як Windows Service у чистому runner-середовищі. Smoke підставляє тестові `ffmpeg.exe`/`ffprobe.exe` і не запускає WinGet для dependency install, тож чисте встановлення залежностей, інсталяція WinGet та removal на цільовому ПК лишаються окремими перевірками. Workflow: https://github.com/Sadoharu/rtmp-stream-monitor/actions/runs/36525504991.
 
-The existing Windows system-Python service lifecycle check remains in `tests/smoke_windows_installer.ps1`. The smoke also accepts `-BundlePath`; Windows Actions built the ZIP, installed and started the service using its private runtime, then removed the service and files in run 36629223130. This runner check uses test `ffmpeg.exe`/`ffprobe.exe` stubs; it does not verify WinGet dependency installation or actual RTMP playback on a clean customer machine.
+The Windows installer now gives a package-specific manual-install instruction when `winget.exe` is absent: the bundled ZIP asks only for machine-wide FFmpeg/ffprobe, while the source installer asks for Python only when its machine-wide Python lookup failed. A PowerShell regression check covers both messages and is included in Windows CI. This checks the guidance only; it does not verify WinGet dependency installation or actual RTMP playback on a clean customer machine. The service smoke still uses test `ffmpeg.exe`/`ffprobe.exe` stubs.
 
 ## Ubuntu `.deb` build
 

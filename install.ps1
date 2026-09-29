@@ -22,6 +22,7 @@ function Invoke-RtmpMonitorNativeCommand {
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw "Run PowerShell as Administrator and retry .\install.ps1" }
 . (Join-Path $PSScriptRoot 'scripts\windows-python.ps1')
+. (Join-Path $PSScriptRoot 'scripts\windows-install-guidance.ps1')
 $bundledPythonExe = Join-Path $PSScriptRoot 'runtime\python.exe'
 $bundledRuntime = Test-Path -LiteralPath $bundledPythonExe
 if ($bundledRuntime -and $PythonPath) { throw "This package includes its own Python runtime; -PythonPath is not used." }
@@ -34,7 +35,7 @@ function Install-RtmpMonitorWinGetPackage {
     param([Parameter(Mandatory)][string]$PackageId)
     $winget = Get-Command winget.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $winget) {
-        throw "winget.exe was not found. Install Python 3.12 and FFmpeg machine-wide, then rerun with -NoDependencyInstall; or install the Windows Package Manager and retry."
+        throw (Get-RtmpMonitorWinGetUnavailableMessage -PackageId $PackageId)
     }
     Write-Host "Installing $PackageId for all users with winget..."
     Invoke-RtmpMonitorNativeCommand {
