@@ -59,7 +59,9 @@ ReadWritePaths=/var/lib/rtmp-monitor /var/log/rtmp-monitor
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
-systemctl enable --now rtmp-monitor-central.service
+systemctl enable rtmp-monitor-central.service
+# Restart applies updated code when the unit was already active.
+systemctl restart rtmp-monitor-central.service
 echo "Central monitor installed. Dashboard: http://<server>:8090"
 echo "After startup, read the local admin token with: sudo -u rtmp-monitor /opt/rtmp-monitor/.venv/bin/rtmp-monitor show-admin-token --config /etc/rtmp-monitor/central.yaml"
 echo "Allow TCP/8090 only from trusted management and probe networks."

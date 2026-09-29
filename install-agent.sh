@@ -61,5 +61,7 @@ ReadWritePaths=/var/lib/rtmp-monitor-agent /var/log/rtmp-monitor-agent
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
-systemctl enable --now rtmp-monitor-agent.service
+systemctl enable rtmp-monitor-agent.service
+# Restart applies updated code when the unit was already active.
+systemctl restart rtmp-monitor-agent.service
 echo "Agent installed. Check: systemctl status rtmp-monitor-agent; journalctl -u rtmp-monitor-agent"
