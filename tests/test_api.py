@@ -102,7 +102,7 @@ def test_resolved_incident_context_keeps_gathering_post_event_samples(tmp_path):
         admin_token_file=admin_file,
     ))
     admin = admin_file.read_text(encoding="utf-8").strip()
-    started_at = datetime.now(timezone.utc) - timedelta(seconds=35)
+    started_at = datetime.now(timezone.utc) - timedelta(seconds=75)
     with TestClient(app) as client:
         headers = {"Authorization": f"Bearer {admin}"}
         client.post("/api/v1/streams", headers=headers, json={"id": "demo", "name": "demo"})
@@ -112,6 +112,15 @@ def test_resolved_incident_context_keeps_gathering_post_event_samples(tmp_path):
         })
         token = created_agent.json()["token"]
         samples = [
+            {
+                "sample_id": "pre-event-context",
+                "stream_id": "demo",
+                "observed_at": (started_at - timedelta(seconds=55)).isoformat(),
+                "status": "OK",
+                "metrics": {"last_frame_age": 0.1},
+                "events": [],
+                "context": {},
+            },
             {
                 "sample_id": "before-freeze",
                 "stream_id": "demo",
@@ -142,7 +151,7 @@ def test_resolved_incident_context_keeps_gathering_post_event_samples(tmp_path):
             {
                 "sample_id": "post-event-context",
                 "stream_id": "demo",
-                "observed_at": (started_at + timedelta(seconds=30)).isoformat(),
+                "observed_at": (started_at + timedelta(seconds=55)).isoformat(),
                 "status": "OK",
                 "metrics": {"last_frame_age": 0.1},
                 "events": [],
@@ -156,7 +165,8 @@ def test_resolved_incident_context_keeps_gathering_post_event_samples(tmp_path):
         assert len(incidents) == 1
         incident = incidents[0]
         assert incident["active"] is False
-        assert incident["context"]["window_end"] == (started_at + timedelta(seconds=30)).isoformat()
+        assert incident["context"]["window_start"] == (started_at - timedelta(seconds=60)).isoformat()
+        assert incident["context"]["window_end"] == (started_at + timedelta(seconds=55)).isoformat()
         timeline = incident["context"]["timeline"]
         assert [item["timestamp"] for item in timeline] == [sample["observed_at"] for sample in samples]
 
