@@ -135,6 +135,28 @@ def test_ffmpeg_progress_rate_is_not_reported_as_source_fps(tmp_path):
     assert "fps" not in probe.stream_metadata
 
 
+def test_light_probe_does_not_label_ffprobe_parse_error_as_decode_error(tmp_path):
+    config = AgentFileConfig.model_validate({
+        "server": {"url": "http://central.example:8090"},
+        "agent": {"name": "light-test", "token": "test-token", "profile": "LIGHT"},
+        "streams": [{"id": "poland", "url": "rtmp://server.example/live/poland"}],
+        "state_dir": str(tmp_path / "state"),
+        "log_dir": str(tmp_path / "logs"),
+    })
+    probe = StreamProbe(config.streams[0], config, LocalQueue(tmp_path / "queue.db", 1024 * 1024, 100))
+
+    class DiagnosticLines:
+        async def __aiter__(self):
+            yield b"[h264 @ 0x123] Error splitting the input into NAL units.\n"
+
+    probe.process = SimpleNamespace(stderr=DiagnosticLines())
+    asyncio.run(probe._read_stderr())
+
+    assert [event["code"] for event in probe.pending_events] == ["BITSTREAM_PARSE_ERROR"]
+    assert probe.pending_events[0]["severity"] == "WARNING"
+    assert probe.decode_error_count == 0
+
+
 def test_deep_framecrc_measures_audio_and_video_packet_bytes_after_warmup(tmp_path, monkeypatch):
     config = AgentFileConfig.model_validate({
         "server": {"url": "http://central.example:8090"},

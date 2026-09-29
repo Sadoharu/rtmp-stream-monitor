@@ -47,6 +47,7 @@ const EVENT_LABEL: Record<string, string> = {
   KEYFRAME_GAP: "Завеликий інтервал між ключовими кадрами",
   KEYFRAME_GAP_END: "Інтервал ключових кадрів відновився",
   DECODE_ERROR: "Помилка декодування кадру",
+  BITSTREAM_PARSE_ERROR: "Не вдалося прочитати медіапакет",
   PTS_REGRESSION: "Час кадру повернувся назад",
   DTS_REGRESSION: "Порушився порядок декодування кадрів",
   PTS_JUMP: "Стрибок медіачасу",

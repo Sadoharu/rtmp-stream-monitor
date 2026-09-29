@@ -611,7 +611,7 @@ def test_v2_events_explain_client_fault_from_evidence_and_keep_pts_cause_unconfi
     events = response.json()["events"]
     incident = next(item for item in events if item["kind"] == "incident")
     pts_event = next(item for item in events if item["code"] == "PTS_REGRESSION")
-    assert incident["summary"] == "Клієнтський probe зафіксував проблему приймання або декодування."
+    assert incident["summary"] == "Клієнтський probe зафіксував проблему приймання або обробки медіаданих."
     assert incident["confidence"] == "LIKELY"
     assert "декодері клієнта" in incident["explanation"]
     assert incident["cause_key"] == "CLIENT_RECEIVE_OR_DECODER"

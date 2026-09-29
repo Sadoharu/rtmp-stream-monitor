@@ -1009,6 +1009,7 @@ def _probe_event_summary(code: str) -> str:
         "SILENCE_DURATION": "Виміряно тривалість тиші в аудіо.",
         "SILENCE_END": "Аудіо відновилося.",
         "DECODE_ERROR": "Декодер повідомив про помилку.",
+        "BITSTREAM_PARSE_ERROR": "ffprobe не зміг розібрати медіапакет.",
         "PTS_REGRESSION": "Часова позначка відео пішла назад.",
         "DTS_REGRESSION": "Часова позначка пакета пішла назад.",
         "PTS_JUMP": "Виявлено стрибок часової позначки PTS.",
@@ -1148,6 +1149,9 @@ def _probe_event_explanation(code: str, role: str, details: dict[str, int | floa
                 "Це підтверджує розсинхронізацію в точці спостереження, але не визначає, де вона виникла.")
     if code == "DECODE_ERROR":
         return f"FFmpeg на {point} повідомив про помилку декодування. Це локалізує симптом у цій точці, але не доводить мережеву чи серверну причину."
+    if code == "BITSTREAM_PARSE_ERROR":
+        return (f"ffprobe на {point} не зміг розібрати медіапакет; профіль LIGHT не декодує кадри. "
+                "Це підтверджує проблему читання бітстріму в цій точці, але не визначає, де саме пакет пошкодився.")
     if code in {"FREEZE_START", "FREEZE_END", "SILENCE_START", "SILENCE_END", "AUDIO_MISSING"}:
         return f"{_probe_event_summary(code)} Це спостережено на {point}; без одночасних даних із сусідніх probe місце виникнення причини невідоме."
     if code == "STREAM_STALL":
@@ -1188,7 +1192,7 @@ def _probe_event_explanation(code: str, role: str, details: dict[str, int | floa
 
 def _incident_summary(diagnosis: str) -> str:
     labels = {
-        "CLIENT_PROBLEM": "Клієнтський probe зафіксував проблему приймання або декодування.",
+        "CLIENT_PROBLEM": "Клієнтський probe зафіксував проблему приймання або обробки медіаданих.",
         "CLIENT_PATH_UNCONFIRMED": "Клієнтський probe зафіксував проблему, але стан виходу сервера невідомий.",
         "NETWORK_PATH_PROBLEM": "Клієнтський симптом збігся з мережевою ознакою на шляху доставки.",
         "NETWORK_PATH_UNCONFIRMED": "Є мережевий сигнал біля клієнта, але його зв'язок із RTMP-потоком не доведений.",

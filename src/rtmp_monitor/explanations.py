@@ -12,14 +12,14 @@ from urllib.request import Request, urlopen
 ROLES = {"SOURCE", "SERVER_INGRESS", "SERVER_EGRESS", "CLIENT"}
 STATUSES = {"OK", "WARNING", "CRITICAL", "ERROR", "STREAM_OFFLINE", "STREAM_STALLED", "AGENT_OFFLINE", "TELEMETRY_STALE"}
 EVENT_CODES = {
-    "KEYFRAME_GAP", "KEYFRAME_GAP_END", "DECODE_ERROR", "FREEZE_START", "FREEZE_DURATION", "FREEZE_END", "STREAM_STALL", "FFMPEG_DEAD",
+    "KEYFRAME_GAP", "KEYFRAME_GAP_END", "DECODE_ERROR", "BITSTREAM_PARSE_ERROR", "FREEZE_START", "FREEZE_DURATION", "FREEZE_END", "STREAM_STALL", "FFMPEG_DEAD",
     "FFMPEG_EXIT", "PROBE_ERROR", "DTS_REGRESSION", "PTS_REGRESSION", "PTS_JUMP", "PROGRESS_STALE",
     "SILENCE_START", "SILENCE_DURATION", "SILENCE_END", "AUDIO_MISSING", "AV_TIMESTAMP_DRIFT", "FFMPEG_RESTART", "AGENT_OFFLINE",
     "STREAM_OFFLINE", "TCP_RETRANSMISSION", "TCP_RESET", "PACKET_LOSS", "RTT_SPIKE", "CONNECTION_RESET",
     "SRS_PUBLISH_STATE_UNAVAILABLE", "SRS_COUNTERS_UNAVAILABLE", "SRS_API_UNAVAILABLE", "INGRESS_RECOVERED",
 }
 MEDIA_EVENT_CODES = {
-    "KEYFRAME_GAP", "DECODE_ERROR", "FREEZE_START", "STREAM_STALL", "FFMPEG_DEAD", "FFMPEG_EXIT",
+    "KEYFRAME_GAP", "DECODE_ERROR", "BITSTREAM_PARSE_ERROR", "FREEZE_START", "STREAM_STALL", "FFMPEG_DEAD", "FFMPEG_EXIT",
     "PROBE_ERROR", "DTS_REGRESSION", "PTS_REGRESSION", "PTS_JUMP", "PROGRESS_STALE", "SILENCE_START",
     "AUDIO_MISSING", "AV_TIMESTAMP_DRIFT", "FFMPEG_RESTART", "STREAM_OFFLINE",
 }
@@ -301,11 +301,11 @@ def _episode_assessment(packet: dict[str, Any], episode: dict[str, Any]) -> dict
             and _number(sample.get("metrics", {}).get("network", {}).get("tcp_retransmissions")) == 0
             for sample in by_role["CLIENT"]
         )
-        client_has_media_error = client_has_decode_error or bool(client_codes & {"PTS_REGRESSION", "PTS_JUMP", "DTS_REGRESSION", "KEYFRAME_GAP"})
+        client_has_media_error = client_has_decode_error or bool(client_codes & {"BITSTREAM_PARSE_ERROR", "PTS_REGRESSION", "PTS_JUMP", "DTS_REGRESSION", "KEYFRAME_GAP"})
         if client_has_media_error and clean_flow_network:
             key = "CLIENT_RECEIVE_OR_DECODER"
             confidence = "low" if clock_uncertain else "medium"
-            text = "SERVER_EGRESS передавав медіа, на клієнті є помилка декодера або медіатаймстемпів, а доступний per-flow TCP sample не показав retransmits. Це найбільше відповідає проблемі на прийманні або декодері клієнта; мережеві counters не виключають усі мережеві причини."
+            text = "SERVER_EGRESS передавав медіа, на клієнті є помилка обробки медіаданих (розбору бітстріму, у декодері клієнта або часових позначок), а доступний per-flow TCP sample не показав retransmits. Це найбільше відповідає проблемі на прийманні або декодері клієнта; мережеві counters не виключають усі мережеві причини."
             if clock_uncertain:
                 text += " Впевненість знижена, бо синхронізацію годинників між точками не підтверджено."
         else:
@@ -480,6 +480,7 @@ def build_evidence_packet(incident: Any, related: list[Any]) -> dict[str, Any]:
 
     event_labels = {
         "FREEZE_START": "почалося завмирання відео", "DECODE_ERROR": "зафіксовано помилку декодування",
+        "BITSTREAM_PARSE_ERROR": "ffprobe не зміг розібрати медіапакет",
         "PTS_REGRESSION": "часова мітка відео PTS пішла назад", "DTS_REGRESSION": "часова мітка DTS пішла назад",
         "PTS_JUMP": "зафіксовано стрибок часових міток PTS", "KEYFRAME_GAP": "інтервал між ключовими кадрами завеликий",
         "TCP_RETRANSMISSION": "зафіксовано повторну передачу TCP", "TCP_RESET": "TCP-з'єднання було скинуте",

@@ -12,6 +12,7 @@
 
 - Каталог `_safe_events` покриває коди, які створюють FFmpeg/analyzer, SRS ingress, correlation та мережеві виміри: зокрема `FREEZE_*`, `SILENCE_*`, `KEYFRAME_GAP_END`, `FFMPEG_*`, `PROBE_ERROR`, `AV_TIMESTAMP_DRIFT`, `SRS_*` та `INGRESS_RECOVERED`.
 - Підсумок і пояснення розділяють проблему медіа та проблему спостереження. `SRS_API_UNAVAILABLE`, `SRS_COUNTERS_UNAVAILABLE` і `SRS_PUBLISH_STATE_UNAVAILABLE` означають, що стан входу невідомий; самі по собі вони не доводять збій потоку. `INGRESS_RECOVERED` означає відновлення SRS спостереження, а не успішне декодування медіа.
+- `DEEP` може декодувати кадри й повідомляє `DECODE_ERROR`; `LIGHT` лише читає пакети через `ffprobe`, тому відповідна помилка розбору позначається як `BITSTREAM_PARSE_ERROR`, а не як помилка декодера.
 - `KEYFRAME_GAP` показує фактичний час без ключового кадру, поріг і доступний очікуваний GOP. `STREAM_STALL` показує доступний вік медіа/ingress та поріг. Події `FFMPEG_DEAD`, `FFMPEG_EXIT`, `FFMPEG_RESTART`, `PROGRESS_STALE` і `PROBE_ERROR` пояснюють стан процесу спостереження та не оголошують його кореневою причиною потоку.
 - Для SRS ingress картка може показати доступність API, стан публікації, вік останнього руху, приймання за 30 секунд, байти й лічильники кадрів.
 - У UI тривалість `SILENCE_DURATION` називається тривалістю тиші, а `FREEZE_DURATION` — завмиранням. Булеві докази локалізовані; невідомі коди інцидентів не з'являються в інтерфейсі як сирі snake-case рядки.

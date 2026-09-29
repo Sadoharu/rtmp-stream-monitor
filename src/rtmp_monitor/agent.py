@@ -383,6 +383,10 @@ class StreamProbe:
                         self._event_throttled("AV_TIMESTAMP_DRIFT", "WARNING", {"delta_seconds": round(delta, 4)}, 10)
             event = parse_diagnostic_line(line)
             if event:
+                if event["code"] == "DECODE_ERROR" and self.config.agent.profile == "LIGHT":
+                    # ffprobe reads packet/container structure but does not decode frames.
+                    # Keep its malformed-bitstream diagnostics distinct from decoder failures.
+                    event = {**event, "code": "BITSTREAM_PARSE_ERROR", "severity": "WARNING"}
                 self._accept_event(event)
             self._parse_debug_timestamps(line)
 

@@ -13,7 +13,7 @@ from rtmp_monitor.explanations import EVENT_CODES, NETWORK_EVENT_CODES, _safe_ev
 # Keep this list aligned with event producers in agent.py, analyzer.py,
 # srs_ingress.py, and the network telemetry contract.
 PRODUCED_EVENT_CODES = {
-    "KEYFRAME_GAP", "KEYFRAME_GAP_END", "DECODE_ERROR", "FREEZE_START", "FREEZE_DURATION", "FREEZE_END",
+    "KEYFRAME_GAP", "KEYFRAME_GAP_END", "DECODE_ERROR", "BITSTREAM_PARSE_ERROR", "FREEZE_START", "FREEZE_DURATION", "FREEZE_END",
     "STREAM_STALL", "FFMPEG_DEAD", "FFMPEG_EXIT", "PROBE_ERROR", "DTS_REGRESSION", "PTS_REGRESSION",
     "PTS_JUMP", "PROGRESS_STALE", "SILENCE_START", "SILENCE_DURATION", "SILENCE_END", "AUDIO_MISSING",
     "AV_TIMESTAMP_DRIFT", "FFMPEG_RESTART", "AGENT_OFFLINE", "STREAM_OFFLINE", "SRS_PUBLISH_STATE_UNAVAILABLE",
@@ -34,6 +34,15 @@ def test_every_produced_event_is_allowlisted_and_has_a_human_summary():
         assert code not in summary
         assert code not in explanation
         assert "_" not in summary
+
+
+def test_light_bitstream_parse_event_does_not_claim_that_frames_were_decoded():
+    summary = _probe_event_summary("BITSTREAM_PARSE_ERROR")
+    explanation = _probe_event_explanation("BITSTREAM_PARSE_ERROR", "CLIENT", {}, {})
+
+    assert "ffprobe" in summary
+    assert "профіль LIGHT не декодує кадри" in explanation
+    assert "не визначає, де саме пакет пошкодився" in explanation
 
 
 def test_event_details_preserve_keyframe_stall_and_ffmpeg_measurements_only():

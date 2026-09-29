@@ -72,12 +72,24 @@ Reproduce the combined long-GOP and server-restart scenario with:
 py -3.12 scripts/live-server-restart-smoke.py --publisher-gop-seconds 10 --keyframe-gap-threshold 2 --before-restart 15 --after-restart 25
 ```
 
-An exploratory [FFmpeg noise bitstream filter](https://ffmpeg.org/ffmpeg-bitstream-filters.html#noise) attempt once produced `DECODE_ERROR` on both probes at `2026-09-29T18:50:07.988Z` and `18:50:07.989Z`, along with freeze/keyframe markers and an `UNCONFIRMED` client-path diagnosis. Repeated attempts with the same interval did not consistently emit `DECODE_ERROR`, so this is not counted as a repeatable end-to-end pass. The smoke keeps that criterion open; it needs a deterministic corrupted-stream fixture before we can claim success.
+## Deterministic H.264 corruption and decoder recovery — 2026-09-29
+
+The [server-restart smoke](../scripts/live-server-restart-smoke.py) now accepts `--damage-video-frames FIRST LAST`. It uses FFmpeg's `noise` bitstream filter to corrupt a deterministic range of encoded video packets in the local publisher while leaving the RTMP session up; frames after the selected interval are clean. This is encoded-media corruption, not network packet loss.
+
+Three independent runs with frames `50..70` (about `2.0..2.8 s` at 25 fps) each recorded `DECODE_ERROR` from the `DEEP` probe. Before restarting SRS, the decoder was still running and had resumed producing recent frames: `frames=379`, `last_frame_age=0.125 s` in the first run and `frames=379`, `last_frame_age=0.110 s` after the profile-classification fix. After the SRS restart both profiles reconnected and produced positive `MEASURED` bitrate buckets (`4–5` buckets per profile, depending on capture timing). The repeated command is:
+
+```powershell
+py -3.12 scripts/live-server-restart-smoke.py --damage-video-frames 50 70 --before-restart 12 --after-restart 12
+```
+
+The test exposed a labeling error: `LIGHT` uses `ffprobe` and does not decode frames, but its parser diagnostic had been counted as `DECODE_ERROR`. `LIGHT` now reports `BITSTREAM_PARSE_ERROR` at warning severity, while `DEEP` retains `DECODE_ERROR`; the API and dashboard explain the distinction. The post-fix integration run showed one `DECODE_ERROR` from `restart-deep`, one `BITSTREAM_PARSE_ERROR` from `restart-light`, recent decoded frames before the SRS restart, and recovered measured series after it. Other timestamp and unconfirmed-path markers appeared during the generated scenario; they do not establish a separate root cause.
+
+This verifies reproducible bitstream damage, a decode diagnostic, and frame/bitrate recovery through SRS, agents, storage, and the V2 API on one Windows host. It does not verify actual network packet loss or independent network sites.
 
 ## What remains unverified for M6
 
 - A simultaneous real `SERVER_EGRESS` probe and at least two clients on separate Windows/Ubuntu hosts are not available from this workstation. The three-probe localization chain cannot be accepted from same-host client probes.
-- Controlled video-freeze, configured long-GOP/keyframe-gap, RTMP server-restart, and client-only TCP outage scenarios were induced against isolated localhost SRS sources. The freeze reached the browser; the other scenarios reached the V2 API with the expected markers, reconnects, and recovered measurements. A loopback proxy outage now verifies client disconnection while `SERVER_EGRESS` continues to measure the direct SRS output. `DECODE_ERROR` appeared in one damaged-packet attempt but was not reproducible; actual packet loss remains unverified end-to-end.
+- Controlled video-freeze, configured long-GOP/keyframe-gap, RTMP server-restart, client-only TCP outage, and deterministic H.264 bitstream corruption/recovery scenarios were induced against isolated localhost SRS sources. The freeze reached the browser; the other scenarios reached the V2 API with expected markers, reconnects, and recovered measurements. A loopback proxy outage verifies client disconnection while `SERVER_EGRESS` continues to measure direct SRS output. Actual network packet loss remains unverified end-to-end.
 - The multi-probe API was exercised against a real feed. Browser rendering and evidence-card interaction were verified for the controlled local fixture; browser graph interaction for the live user feed remains unchecked. Earlier four-series load views were checked separately as noted in M2.
 - No PostgreSQL deployment or migration of the user's Ubuntu systemd database was performed. Clean Windows/Ubuntu installs, real upgrade/rollback, and self-contained Windows/Ubuntu packages are still open under M4/M5.
 

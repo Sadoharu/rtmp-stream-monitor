@@ -106,7 +106,12 @@ async def stop_process(process: asyncio.subprocess.Process | None) -> None:
         await process.wait()
 
 
-async def start_publisher(port: int, stream_key: str, gop_seconds: float) -> asyncio.subprocess.Process:
+async def start_publisher(
+    port: int,
+    stream_key: str,
+    gop_seconds: float,
+    damaged_video_frames: tuple[int, int] | None = None,
+) -> asyncio.subprocess.Process:
     url = f"rtmp://127.0.0.1:{port}/live/{stream_key}"
     gop_frames = round(gop_seconds * 25)
     command = [
@@ -119,6 +124,10 @@ async def start_publisher(port: int, stream_key: str, gop_seconds: float) -> asy
         "-g", str(gop_frames), "-keyint_min", str(gop_frames), "-sc_threshold", "0",
         "-c:a", "aac", "-b:a", "96k", "-ar", "48000",
     ]
+    if damaged_video_frames is not None:
+        first_frame, last_frame = damaged_video_frames
+        noise = f"noise=amount=if(between(n\\,{first_frame}\\,{last_frame})\\,10\\,0)"
+        command.extend(["-bsf:v", noise])
     command.extend(["-f", "flv", url])
     return await asyncio.create_subprocess_exec(
         *command,
@@ -138,16 +147,21 @@ async def run_scenario(
     before_restart: float,
     after_restart: float,
     gop_seconds: float,
-) -> tuple[datetime, dict[str, dict], dict[str, dict], datetime]:
+    damaged_video_frames: tuple[int, int] | None = None,
+) -> tuple[datetime, dict[str, dict], dict[str, dict], datetime, dict]:
     tasks = [asyncio.create_task(AgentRunner(config).run()) for config in configs]
     publisher: asyncio.subprocess.Process | None = None
     observed_from = datetime.now(timezone.utc)
     restart_at: datetime | None = None
     recovered: dict[str, dict] = {}
+    before_restart_dashboard: dict = {}
     try:
-        publisher = await start_publisher(host_port, stream_id, gop_seconds)
+        publisher = await start_publisher(host_port, stream_id, gop_seconds, damaged_video_frames)
         await wait_for_measured(central_url, admin_token, stream_id, agent_ids, timeout=30)
         await asyncio.sleep(before_restart)
+        before_restart_dashboard = await asyncio.to_thread(
+            api_request, central_url, f"/api/v1/dashboard?stream_id={stream_id}", admin_token
+        )
 
         restart_at = datetime.now(timezone.utc)
         print(f"Restarting isolated SRS container at {restart_at.isoformat()}.", flush=True)
@@ -187,7 +201,7 @@ async def run_scenario(
         "events": events,
         "series": series,
         "dashboard": dashboard,
-    }, observed_to
+    }, observed_to, before_restart_dashboard
 
 
 def main() -> int:
@@ -197,12 +211,28 @@ def main() -> int:
     parser.add_argument("--after-restart", type=float, default=25)
     parser.add_argument("--publisher-gop-seconds", type=float, default=2)
     parser.add_argument("--keyframe-gap-threshold", type=float)
+    parser.add_argument(
+        "--damage-video-frames",
+        nargs=2,
+        type=int,
+        metavar=("FIRST", "LAST"),
+        help="deterministically corrupt encoded video packets in this inclusive frame range; requires DEEP",
+    )
     parser.add_argument("--profiles", nargs="+", choices=("DEEP", "LIGHT"), default=("LIGHT", "DEEP"))
     args = parser.parse_args()
     if args.before_restart < 8 or args.after_restart < 12:
         parser.error("Use at least 8 seconds before restart and 12 seconds after restart")
     if not 1 <= args.publisher_gop_seconds <= 30:
         parser.error("--publisher-gop-seconds must be between 1 and 30")
+    if args.damage_video_frames is not None:
+        first_frame, last_frame = args.damage_video_frames
+        if first_frame < 0 or last_frame < first_frame:
+            parser.error("--damage-video-frames requires 0 <= FIRST <= LAST")
+        if "DEEP" not in args.profiles:
+            parser.error("--damage-video-frames requires the DEEP profile")
+        recovery_time = last_frame / 25 + args.publisher_gop_seconds + 2
+        if recovery_time >= args.before_restart:
+            parser.error("Allow at least one GOP plus two seconds to recover before the SRS restart")
     if args.keyframe_gap_threshold is not None:
         if args.keyframe_gap_threshold < 2 or args.keyframe_gap_threshold >= args.publisher_gop_seconds:
             parser.error("The keyframe gap threshold must be at least 2 seconds and below the publisher GOP interval")
@@ -299,9 +329,10 @@ def main() -> int:
                 }))
                 configs[-1].network.server_port = host_port
 
-            restart_at, recovered, result, observed_to = asyncio.run(run_scenario(
+            restart_at, recovered, result, observed_to, before_restart_dashboard = asyncio.run(run_scenario(
                 configs, central_url, admin_token, stream_id, agent_ids, container, host_port,
                 args.before_restart, args.after_restart, args.publisher_gop_seconds,
+                tuple(args.damage_video_frames) if args.damage_video_frames is not None else None,
             ))
             events = result["events"]["events"]
             event_codes = {event["code"] for event in events}
@@ -320,6 +351,32 @@ def main() -> int:
                     f"location={event.get('probable_location') or 'not localized'}"
                 )
             failures = []
+            if args.damage_video_frames is not None:
+                deep_id = next(
+                    agent_id for agent_id, identity in expected.items() if identity["profile"] == "DEEP"
+                )
+                deep_name = expected[deep_id]["name"]
+                decode_events = [event for event in events if event["code"] == "DECODE_ERROR"]
+                deep_decode_events = [
+                    event for event in decode_events
+                    if event.get("probe_name") == deep_name or event.get("probe_id") == deep_id
+                ]
+                pre_restart_agents = {
+                    item["id"]: item for item in before_restart_dashboard.get("agents", [])
+                }
+                deep_metrics = (pre_restart_agents.get(deep_id) or {}).get("metrics") or {}
+                deep_frame_age = deep_metrics.get("last_frame_age")
+                print(
+                    f"DEEP decode recovery before SRS restart: decode errors={len(deep_decode_events)}; "
+                    f"frames={deep_metrics.get('frames')}; last_frame_age={deep_frame_age}; "
+                    f"ffmpeg_running={deep_metrics.get('ffmpeg_running')}"
+                )
+                if not deep_decode_events:
+                    failures.append("the event timeline did not record DECODE_ERROR for the DEEP probe")
+                if not deep_metrics.get("ffmpeg_running"):
+                    failures.append("the DEEP decoder was not running after the corrupted frame interval")
+                if not isinstance(deep_frame_age, (int, float)) or deep_frame_age > 2:
+                    failures.append("the DEEP decoder did not resume producing recent frames after corruption")
             for agent_id, identity in expected.items():
                 agent = dashboard_agents.get(agent_id) or {}
                 metrics = agent.get("metrics") or {}

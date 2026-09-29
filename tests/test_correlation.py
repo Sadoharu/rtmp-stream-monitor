@@ -218,6 +218,18 @@ def test_client_only_media_error_without_network_evidence_points_to_client():
     assert result["diagnosis"] == "CLIENT_PROBLEM"
 
 
+def test_light_bitstream_parse_error_is_a_client_media_symptom_not_a_decode_claim():
+    result = diagnose_observations([
+        report("SERVER_EGRESS", "egress"),
+        report("CLIENT", "client", "WARNING", broken("BITSTREAM_PARSE_ERROR", "WARNING"), {
+            "provider": "linux", "tcp_state": "ESTABLISHED", "tcp_retransmissions": 0,
+        }),
+    ])
+
+    assert result["diagnosis"] == "CLIENT_PROBLEM"
+    assert result["probable_location"].startswith("CLIENT RECEIVE / DECODER")
+
+
 def test_stale_ffmpeg_progress_is_included_in_client_symptoms():
     result = diagnose_observations([
         report("CLIENT", "client", "WARNING", broken("PROGRESS_STALE", "WARNING")),

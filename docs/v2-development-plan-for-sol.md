@@ -133,12 +133,14 @@ Docker Compose для центрального сервера спираєтьс
 - [x] Локальний SRS/FFmpeg fixture перевірив bitrate dip і freeze в обох профілях; Windows dashboard показав обидві лінії, спільну шкалу подій і картку з тривалістю 6.02 s та `UNCONFIRMED` висновком.
 - [x] Ізольований рестарт SRS та 10-секундний GOP дали `FFMPEG_RESTART`, `KEYFRAME_GAP` і `KEYFRAME_GAP_END`; агенти відновили вимірювання.
 - [x] **Client-only TCP outage:** proxy клієнтів вимикався на 8 s, тоді як прямий `SERVER_EGRESS` мав 8 виміряних бакетів (середнє 0.994 Mbps); обидва клієнти перепідключилися, а корелятор створив `NETWORK_PATH_PROBLEM` між server egress і клієнтами.
+- [x] **Bitstream corruption/decode recovery:** локальний SRS сценарій тричі записав `DECODE_ERROR` на `DEEP`; до рестарту сервера декодер відновив кадри (`last_frame_age` 0.110–0.187 s), а після рестарту `LIGHT` і `DEEP` знову мали виміряний бітрейт. Повідомлення `ffprobe` від `LIGHT` окремо класифікується як `BITSTREAM_PARSE_ERROR`.
 
 **Ще відкрите; M6 лишається частковим:**
 
 - [ ] Перевірити в браузері live-графік потоку `poland`. Попередні live-запуски доводять тільки API series; контрольний dashboard перевірявся на локальному SRS fixture.
 - [ ] Перевірити на фізично незалежних хостах: `SERVER_EGRESS` та клієнти з інших Windows/Ubuntu мереж. Loopback сценарії цього не підтверджують.
-- [ ] Відтворити реальну packet loss і `DECODE_ERROR` із подальшим відновленням. Одне дослідне пошкодження потоку видало цю подію, але результат не вдалося стабільно повторити.
+- [x] Повторно відтворити пошкодження H.264-пакетів, `DECODE_ERROR` у `DEEP` і відновлення декодування/бітрейту; деталі й команда — у звіті M6.
+- [ ] Відтворити втрату мережевих пакетів на самому RTMP-шляху й перевірити відновлення. Bitstream corruption вище не зараховується як network packet loss.
 - [ ] Перевірити цільові production install/upgrade, міграцію Ubuntu systemd бази та rollback. Ubuntu smoke запускався в Docker Desktop на Windows, а не на сервері користувача.
 
 Деталі — у [M6 live validation](m6-live-validation.md).
