@@ -17,6 +17,7 @@
 
 - Після додавання GHCR image reference і fallback виконано `docker compose config -q`; Git Bash перевірив синтаксис setup/backup/restore shell scripts через `bash -n`. Це перевіряє локальну Compose-конфігурацію та shell syntax, але не запускає новий GitHub release workflow.
 - `docker compose config -q`, збірка образу та `bash -n` усіх setup/backup/restore scripts пройшли.
+- 30.09.2026 `scripts/docker-restore-smoke.sh` пройшов на Docker Desktop: у тимчасовій копії репозиторію піднято central, створено stream через API, зроблено backup, після чого створений stream прибрано restore-ом; перевірено відновлення відповідного admin token і збереження stream після restart. Smoke використовує окремі project name/named volumes і чистить їх після запуску. GitHub Actions job для цього сценарію доданий, його перший прогін ще очікується після push.
 - На Docker Desktop виконано `docker-setup.sh` із тестовою SQLite базою, імпорт у named volume, healthcheck, restart зі збереженням stream, backup bundle з перевіркою `PRAGMA integrity_check`, а також фактичний запуск `docker-restore.sh` із видаленням тестової мутації та успішним healthcheck.
 - У першому restore smoke знайшовся SQLite `-shm` файл у staging; cleanup змінено на прибирання всього staging-каталогу й restore пройшов повторно.
 - `tests/test_docker_migration.py` перевіряє snapshot з не checkpoint-нутим WAL (з відкритою SQLite writer connection), збереження stream/incident/token/log, повторний запуск без перезапису, відмову від відсутнього token, partial volume та незавершеного import marker.
