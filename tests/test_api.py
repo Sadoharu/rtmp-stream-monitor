@@ -83,7 +83,7 @@ def test_incident_explanation_falls_back_to_evidence_without_openai_and_requires
         explanation = response.json()
         assert explanation["ai_status"] == "not_configured"
         assert explanation["confidence"] == "low"
-        assert "Точну першопричину" in explanation["likely_cause"]
+        assert "не знайдено достатньо" in explanation["likely_cause"]
         assert "predator-private-name" not in response.text
 
 
@@ -110,7 +110,7 @@ def test_ai_incident_explanation_is_cached_until_incident_changes(tmp_path, monk
     calls = []
     def fake_openai(packet, api_key, model):
         calls.append((api_key, model))
-        return {"summary": "Пояснення", "likely_cause": "Причина", "confidence": "low",
+        return {"summary": "Пояснення", "cause_key": packet["causal_analysis"]["cause_key"], "likely_cause": "Причина", "confidence": "low",
                 "evidence_ids": [], "evidence": [], "other_possible_causes": [], "next_checks": [],
                 "ai_generated": True, "model": model}
 
