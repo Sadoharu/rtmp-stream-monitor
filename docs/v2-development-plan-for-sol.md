@@ -134,14 +134,14 @@ Docker Compose для центрального сервера спираєтьс
 - [x] Ізольований рестарт SRS та 10-секундний GOP дали `FFMPEG_RESTART`, `KEYFRAME_GAP` і `KEYFRAME_GAP_END`; агенти відновили вимірювання.
 - [x] **Client-only TCP outage:** proxy клієнтів вимикався на 8 s, тоді як прямий `SERVER_EGRESS` мав 8 виміряних бакетів (середнє 0.994 Mbps); обидва клієнти перепідключилися, а корелятор створив `NETWORK_PATH_PROBLEM` між server egress і клієнтами.
 - [x] **Bitstream corruption/decode recovery:** локальний SRS сценарій тричі записав `DECODE_ERROR` на `DEEP`; до рестарту сервера декодер відновив кадри (`last_frame_age` 0.110–0.187 s), а після рестарту `LIGHT` і `DEEP` знову мали виміряний бітрейт. Повідомлення `ffprobe` від `LIGHT` окремо класифікується як `BITSTREAM_PARSE_ERROR`.
-- [x] **Втрата IP-пакетів на клієнтському RTMP-шляху:** два прогони з `tc netem loss 20%` на ізольованому relay протягом 8 s зафіксували 299 і 270 dropped packets; прямий `SERVER_EGRESS` мав по 8 measured buckets, обидва клієнти відновили телеметрію без TCP reconnect. Сам Monitor не локалізував цю причину; див. звіт M6.
+- [x] **Втрата IP-пакетів на клієнтському RTMP-шляху:** два прогони з `tc netem loss 20%` підтвердили drops/відновлення без діагнозу; три з 50% loss зафіксували `NETWORK_PATH_PROBLEM` через PTS lag 11.251 s, 10.581 s і 6.691 s при здоровому `SERVER_EGRESS`. Усі події мали `UNCONFIRMED`; Monitor не виміряв фактичний packet-loss rate і не довів механізм.
 
 **Ще відкрите; M6 лишається частковим:**
 
 - [ ] Перевірити в браузері live-графік потоку `poland`. Попередні live-запуски доводять тільки API series; контрольний dashboard перевірявся на локальному SRS fixture.
 - [ ] Перевірити на фізично незалежних хостах: `SERVER_EGRESS` та клієнти з інших Windows/Ubuntu мереж. Loopback сценарії цього не підтверджують.
 - [x] Повторно відтворити пошкодження H.264-пакетів, `DECODE_ERROR` у `DEEP` і відновлення декодування/бітрейту; деталі й команда — у звіті M6.
-- [ ] Навчити/перевірити діагностику packet loss на незалежних production-подібних probe: локальний `tc netem` уже підтвердив IP-втрату й відновлення, але поточні події Monitor її не визначили; bitstream corruption не є network packet loss.
+- [ ] Перевірити діагностику packet loss на незалежних production-подібних probe й нижчих рівнях втрат: локально `tc netem` 50% дає обережний `NETWORK_PATH_PROBLEM` за медіалагом, але 20% не локалізується, а точний packet-loss rate не вимірюється; bitstream corruption не є network packet loss.
 - [ ] Перевірити цільові production install/upgrade, міграцію Ubuntu systemd бази та rollback. Ubuntu smoke запускався в Docker Desktop на Windows, а не на сервері користувача.
 
 Деталі — у [M6 live validation](m6-live-validation.md).

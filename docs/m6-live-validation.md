@@ -121,10 +121,12 @@ The same [client-outage smoke](../scripts/live-client-outage-smoke.py) now suppo
 
 Two runs used 20% loss for 8 seconds. The relay reported 299 and 270 dropped packets. In both runs, direct `SERVER_EGRESS` stayed healthy and returned eight positive measured buckets (mean `1.037 Mbps` and `0.997 Mbps`). Both Windows clients stayed TCP-connected (zero reconnects) and submitted fresh measured telemetry after loss was removed. No Docker container or network from the smoke remained after cleanup.
 
-The product did not emit an explicit packet-loss diagnosis: the timeline only contained `PTS_REGRESSION` / `AV_TIMESTAMP_DRIFT` around recovery. Those events are not attributed to the injected loss. The test confirms real IP packet loss on the client RTMP path and successful measurement recovery; it does not prove that a deployed probe can attribute a production incident to packet loss. The harness knows which packets it dropped, while current Windows host-wide transport counters cannot associate retransmits with a particular RTMP flow. Independent client/server observation sites and a production-grade per-flow signal remain necessary for localization.
+Three stronger runs used 50% loss for 8 seconds. The relay reported 187, 118, and 108 dropped packets, while direct `SERVER_EGRESS` returned 9, 8, and 8 positive measured buckets with means of `0.997 Mbps`, `1.012 Mbps`, and `1.059 Mbps`. All three runs emitted `NETWORK_PATH_PROBLEM` for both client profiles while the fault was active, with media PTS lag of `11.251 s`, `10.581 s`, and `6.691 s`; clients recovered measured telemetry without TCP reconnects. The events remained `UNCONFIRMED`, which reflects that the app had evidence of client-side media lag and healthy egress but not proof of the injected packet-loss mechanism or a physical link. The smoke can require this diagnosis with `--require-event NETWORK_PATH_PROBLEM`.
+
+At 20% loss, the product did not emit an explicit network-path diagnosis: the timeline only contained `PTS_REGRESSION` / `AV_TIMESTAMP_DRIFT` around recovery. Those events are not attributed to the injected loss. The test therefore confirms the network-layer fault and recovery at both rates, but the product only localized the severe 50% scenario through correlated media PTS lag. It did not measure or report the actual packet-loss rate. Windows host-wide TCP counters still cannot associate retransmits with a particular RTMP flow; independent client/server observation sites and a production-grade per-flow signal remain necessary for precise localization.
 
 Reproduce with:
 
 ```powershell
-py -3.12 scripts/live-client-outage-smoke.py --packet-loss-percent 20 --outage-after 6 --outage-duration 8 --recovery-timeout 35
+py -3.12 scripts/live-client-outage-smoke.py --packet-loss-percent 50 --outage-after 6 --outage-duration 8 --recovery-timeout 35 --require-event NETWORK_PATH_PROBLEM
 ```

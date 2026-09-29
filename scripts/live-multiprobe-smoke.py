@@ -51,6 +51,8 @@ async def run_probes(configs: list[AgentFileConfig], seconds: float) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("url", help="RTMP URL to probe")
+    parser.add_argument("--stream-id", default="live-multiprobe", help="temporary stream id to register in the collector")
+    parser.add_argument("--stream-name", help="temporary stream name shown in the dashboard (defaults to --stream-id)")
     parser.add_argument("--seconds", type=float, default=20)
     parser.add_argument("--profiles", nargs="+", choices=("DEEP", "LIGHT"), default=("DEEP", "LIGHT"))
     parser.add_argument("--network", action="store_true", help="collect RTT, packet loss, and platform TCP counters")
@@ -106,8 +108,9 @@ def main() -> int:
                 raise RuntimeError("local collector did not start")
 
             admin = (root / "admin.token").read_text(encoding="utf-8").strip()
-            stream_id = "live-multiprobe"
-            request(central_url, "/api/v1/streams", admin, "POST", {"id": stream_id, "name": "live-multiprobe", "local_url": args.url, "public_url": args.url})
+            stream_id = args.stream_id
+            stream_name = args.stream_name or stream_id
+            request(central_url, "/api/v1/streams", admin, "POST", {"id": stream_id, "name": stream_name, "local_url": args.url, "public_url": args.url})
             configs = []
             expected_agents = {}
             for index, profile in enumerate(dict.fromkeys(args.profiles), start=1):

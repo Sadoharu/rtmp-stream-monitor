@@ -422,6 +422,12 @@ def main() -> int:
         type=float,
         help="inject real IP packet loss on an isolated Linux client proxy instead of closing RTMP sockets",
     )
+    parser.add_argument(
+        "--require-event",
+        action="append",
+        default=[],
+        help="fail unless this event code appears in the outage/recovery window; repeatable",
+    )
     parser.add_argument("--profiles", nargs="+", choices=("DEEP", "LIGHT"), default=("LIGHT", "DEEP"))
     args = parser.parse_args()
     if args.outage_after < 5 or args.outage_duration < 2 or args.recovery_timeout < 10:
@@ -634,6 +640,9 @@ def main() -> int:
                     failures.append("healthy SERVER_EGRESS and failed client TCP path did not produce NETWORK_PATH_PROBLEM")
             elif not dropped_packets:
                 failures.append("the isolated tc netem interface did not report an IP packet drop")
+            missing_events = sorted(set(args.require_event) - event_codes)
+            if missing_events:
+                failures.append("the event timeline did not record: " + ", ".join(missing_events))
             if len(egress_points) < 2:
                 failures.append("SERVER_EGRESS did not provide at least two measured buckets during the client outage")
             if restored_at <= interrupted_at:
