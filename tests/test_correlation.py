@@ -174,10 +174,22 @@ def test_media_pts_lag_can_support_network_path_diagnosis():
     egress = report("SERVER_EGRESS", "egress")
     egress["metrics"].update({"last_media_pts": 100, "profile": "LIGHT"})
     client = report("CLIENT", "client", "CRITICAL", broken("FREEZE_START"), {"tcp_retransmissions": 0, "rtt_ms": 4})
-    client["metrics"].update({"last_media_pts": 110, "profile": "LIGHT"})
+    client["metrics"].update({"last_media_pts": 90, "profile": "LIGHT"})
     result = diagnose_observations([egress, client])
     assert result["diagnosis"] == "NETWORK_PATH_PROBLEM"
     assert result["media_lags"][0]["lag_seconds"] == 10
+
+
+def test_client_pts_ahead_of_egress_does_not_support_network_path_diagnosis():
+    egress = report("SERVER_EGRESS", "egress")
+    egress["metrics"].update({"last_media_pts": 100, "profile": "LIGHT"})
+    client = report("CLIENT", "client", "CRITICAL", broken("FREEZE_START"), {"tcp_retransmissions": 0, "rtt_ms": 4})
+    client["metrics"].update({"last_media_pts": 110, "profile": "LIGHT"})
+
+    result = diagnose_observations([egress, client])
+
+    assert result["diagnosis"] == "CLIENT_PROBLEM"
+    assert result["media_lags"][0]["lag_seconds"] == -10
 
 
 def test_missing_ingress_is_explicitly_unconfirmed():

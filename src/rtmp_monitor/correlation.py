@@ -287,7 +287,10 @@ def _client_media_lags(egress: list[dict[str, Any]], clients: list[dict[str, Any
         closest, name = min(server_pts, key=lambda pair: abs(pair[0] - float(value)))
         lags.append({"client": client.get("name", "client"), "server_egress": name,
                      "client_pts": float(value), "server_pts": closest,
-                     "lag_seconds": round(abs(closest - float(value)), 3),
+                     # Positive means the client is behind server egress. A
+                     # client ahead of egress is a timestamp mismatch, not
+                     # evidence of transport delay.
+                     "lag_seconds": round(closest - float(value), 3),
                      "client_profile": (client.get("metrics") or {}).get("profile"),
                      "server_profile": next(((item.get("metrics") or {}).get("profile") for item in egress if item.get("name") == name), None)})
     return lags

@@ -25,6 +25,8 @@ Deep decode CPU cost depends on codec, resolution, frame rate, and hardware. The
 
 The backend compares the latest sample from each probe over a 20-second wall-clock window, then uses media PTS spread as a second alignment check when multiple probes report PTS. The default tolerance is five seconds and is configurable. Matching source/ingress errors point to `SOURCE_OR_INGEST_PROBLEM`; a clean, media-validated ingress plus broken local egress points to `RTMP_SERVER_RESTREAM_PROBLEM`. SRS publisher counters without decoded-media validation are insufficient for that diagnosis and keep it explicitly unconfirmed. Healthy local egress and a broken client point to `NETWORK_PATH_PROBLEM` when transport counters support it, otherwise `CLIENT_PROBLEM`. A media PTS lag also supports a network diagnosis when both compared probes use `LIGHT` packet inspection; in deep mode PTS can lag because decoding is behind, so it is not treated as transport proof. A clean encoder-side `SOURCE` probe does not prove server ingress.
 
+The PTS lag is directional: positive means the client is behind server egress. A client PTS ahead of server egress is a timestamp mismatch and does not independently support a network-path diagnosis.
+
 RTMP over TCP does not expose a frame identity shared by independent decoders. Wall-clock offset, buffering, retransmission and path asymmetry limit root-cause certainty. The dashboard therefore presents a probable location, symptoms, samples and diagnostic excerpts instead of claiming proof.
 
 ## Transport and time sources
