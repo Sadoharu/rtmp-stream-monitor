@@ -95,6 +95,72 @@ def test_batch_correlates_transient_freeze_before_recovery(tmp_path):
         assert incidents[0]["symptoms"][0]["events"][0]["code"] == "FREEZE_START"
 
 
+def test_resolved_incident_context_keeps_gathering_post_event_samples(tmp_path):
+    admin_file = tmp_path / "admin.token"
+    app = create_app(CentralFileConfig(
+        database_url=f"sqlite:///{(tmp_path / 'central.db').as_posix()}",
+        admin_token_file=admin_file,
+    ))
+    admin = admin_file.read_text(encoding="utf-8").strip()
+    started_at = datetime.now(timezone.utc) - timedelta(seconds=35)
+    with TestClient(app) as client:
+        headers = {"Authorization": f"Bearer {admin}"}
+        client.post("/api/v1/streams", headers=headers, json={"id": "demo", "name": "demo"})
+        created_agent = client.post("/api/v1/agents", headers=headers, json={
+            "name": "client-win-demo", "location": "studio", "platform": "Windows",
+            "role": "CLIENT", "stream_id": "demo",
+        })
+        token = created_agent.json()["token"]
+        samples = [
+            {
+                "sample_id": "before-freeze",
+                "stream_id": "demo",
+                "observed_at": (started_at - timedelta(seconds=5)).isoformat(),
+                "status": "OK",
+                "metrics": {"last_frame_age": 0.1},
+                "events": [],
+                "context": {},
+            },
+            {
+                "sample_id": "freeze-start",
+                "stream_id": "demo",
+                "observed_at": started_at.isoformat(),
+                "status": "WARNING",
+                "metrics": {"last_frame_age": 2.1},
+                "events": [{"code": "FREEZE_START", "severity": "WARNING", "details": {"value": 2.1}}],
+                "context": {},
+            },
+            {
+                "sample_id": "freeze-end",
+                "stream_id": "demo",
+                "observed_at": (started_at + timedelta(seconds=5)).isoformat(),
+                "status": "OK",
+                "metrics": {"last_frame_age": 0.1},
+                "events": [{"code": "FREEZE_END", "severity": "INFO", "details": {"value": 7.1}}],
+                "context": {},
+            },
+            {
+                "sample_id": "post-event-context",
+                "stream_id": "demo",
+                "observed_at": (started_at + timedelta(seconds=30)).isoformat(),
+                "status": "OK",
+                "metrics": {"last_frame_age": 0.1},
+                "events": [],
+                "context": {},
+            },
+        ]
+
+        response = client.post("/api/v1/ingest", headers={"Authorization": f"Bearer {token}"}, json={"items": samples})
+        assert response.status_code == 200
+        incidents = client.get("/api/v1/incidents", headers=headers).json()
+        assert len(incidents) == 1
+        incident = incidents[0]
+        assert incident["active"] is False
+        assert incident["context"]["window_end"] == (started_at + timedelta(seconds=30)).isoformat()
+        timeline = incident["context"]["timeline"]
+        assert [item["timestamp"] for item in timeline] == [sample["observed_at"] for sample in samples]
+
+
 def test_recent_delivery_of_old_queue_sample_is_marked_stale(tmp_path):
     admin_file = tmp_path / "admin.token"
     app = create_app(CentralFileConfig(

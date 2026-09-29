@@ -211,6 +211,7 @@ def correlate_stream(session: Session, stream_id: str, now: datetime | None = No
             if incident.diagnosis != "AGENT_OFFLINE":
                 incident.active = False
                 incident.resolved_at = now
+        _refresh_recent_resolved_contexts(session, stream_id, now)
         return None
 
     fingerprint = f"stream:{stream_id}:{result['diagnosis']}"
@@ -219,6 +220,7 @@ def correlate_stream(session: Session, stream_id: str, now: datetime | None = No
         if incident.fingerprint != fingerprint and incident.diagnosis != "AGENT_OFFLINE":
             incident.active = False
             incident.resolved_at = now
+    _refresh_recent_resolved_contexts(session, stream_id, now)
     if existing and (now - _as_aware(existing.updated_at)).total_seconds() <= 120:
         incident = existing
         incident.updated_at = now
@@ -238,6 +240,47 @@ def correlate_stream(session: Session, stream_id: str, now: datetime | None = No
     incident.context["media_correlation"] = result["media_correlation"]
     incident.context["media_lags"] = result.get("media_lags", [])
     return incident
+
+
+def _refresh_recent_resolved_contexts(session: Session, stream_id: str, now: datetime) -> None:
+    """Keep extending resolved incidents' timeline through 60 seconds after open."""
+    now = _as_aware(now)
+    session.flush()
+    recent = session.scalars(
+        select(Incident)
+        .where(
+            Incident.stream_id == stream_id,
+            Incident.active.is_(False),
+            Incident.diagnosis != "AGENT_OFFLINE",
+            Incident.opened_at >= now - timedelta(seconds=120),
+            Incident.opened_at <= now,
+        )
+        .order_by(Incident.opened_at.desc())
+        .limit(100)
+    ).all()
+    for incident in recent:
+        opened_at = _as_aware(incident.opened_at)
+        target_end = min(now, opened_at + timedelta(seconds=60))
+        previous = incident.context or {}
+        previous_end = previous.get("window_end")
+        previous_end_at = None
+        if previous_end:
+            try:
+                previous_end_at = _as_aware(datetime.fromisoformat(previous_end.replace("Z", "+00:00")))
+                if previous_end_at >= target_end:
+                    continue
+            except (AttributeError, TypeError, ValueError):
+                pass
+        if (
+            previous_end_at is not None
+            and target_end < opened_at + timedelta(seconds=60)
+            and (target_end - previous_end_at).total_seconds() < 5
+        ):
+            continue
+        context = _timeline_context(session, stream_id, opened_at, target_end)
+        for key, value in previous.items():
+            context.setdefault(key, value)
+        incident.context = context
 
 
 def _timeline_context(session: Session, stream_id: str, opened_at: datetime, now: datetime) -> dict[str, Any]:
