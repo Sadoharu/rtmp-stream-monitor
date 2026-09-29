@@ -156,6 +156,10 @@ class NetworkTelemetry:
             if self.previous_system_retransmits is not None:
                 retrans = max(0, current - self.previous_system_retransmits)
             self.previous_system_retransmits = current
+        else:
+            # Do not let the next successful sample turn a long monitoring gap
+            # into apparent retransmits during a newer media incident.
+            self.previous_system_retransmits = None
         conn_script = "$hostAddress=$env:RTMP_MONITOR_REMOTE_ADDRESS; $remotePort=[int]$env:RTMP_MONITOR_REMOTE_PORT; Get-NetTCPConnection -RemoteAddress $hostAddress -RemotePort $remotePort -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty State"
         command_env = os.environ.copy()
         command_env["RTMP_MONITOR_REMOTE_ADDRESS"] = self.host or ""

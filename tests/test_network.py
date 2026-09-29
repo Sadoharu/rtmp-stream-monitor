@@ -29,6 +29,28 @@ def test_windows_tcp_query_keeps_host_data_out_of_powershell_source(monkeypatch)
     assert result["tcp_state"] == "Established"
 
 
+def test_windows_retransmit_delta_is_unknown_after_a_missed_sample(monkeypatch):
+    counters = iter(['{"retrans":100}', '{"retrans":103}', "", '{"retrans":110}', '{"retrans":111}'])
+
+    def fake_run(args, timeout=2.0, env=None):
+        if "Get-NetTCPStatistics" in args[-1]:
+            return next(counters)
+        return "Established"
+
+    monkeypatch.setattr(network, "_run", fake_run)
+    telemetry = NetworkTelemetry("10.0.0.1", 1935)
+
+    first, next_sample, missed, after_gap, recovered = [
+        telemetry._windows_tcp_stats(index) for index in range(5)
+    ]
+
+    assert first["tcp_retransmissions"] is None
+    assert next_sample["tcp_retransmissions"] == 3
+    assert missed["tcp_retransmissions"] is None
+    assert after_gap["tcp_retransmissions"] is None
+    assert recovered["tcp_retransmissions"] == 1
+
+
 def test_windows_ping_uses_structured_dotnet_output(monkeypatch):
     host = "server.example; throw 'injected'"
     telemetry = NetworkTelemetry(host, 1935)
