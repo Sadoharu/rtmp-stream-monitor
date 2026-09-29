@@ -188,6 +188,8 @@ def test_deep_command_uses_a_shared_demux_framecrc_output_and_stderr_progress(tm
         "server": {"url": "http://central.example:8090"},
         "agent": {"name": "client-test", "token": "test-token", "profile": "DEEP"},
         "streams": [{"id": "poland", "url": "rtmp://server.example/live/poland"}],
+        "ffmpeg_path": str(tmp_path / "bin" / "ffmpeg"),
+        "ffprobe_path": str(tmp_path / "bin" / "ffprobe"),
         "state_dir": str(tmp_path / "state"),
         "log_dir": str(tmp_path / "logs"),
     })

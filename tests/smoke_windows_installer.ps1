@@ -2,6 +2,7 @@ param([string]$BundlePath = '')
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
+$originalLocation = (Get-Location).Path
 $installerRoot = $repoRoot
 $bundleExtractRoot = ''
 $cleanupPythonExe = ''
@@ -153,6 +154,7 @@ log_dir: '$logDirYaml'
     if ($serviceQueryExitCode -ne 1060) {
         throw "Windows uninstall did not fully remove the service (sc.exe query exit code $serviceQueryExitCode)."
     }
+    $global:LASTEXITCODE = 0
     if ($BundlePath) {
         Write-Host 'Bundled Windows installer and uninstall passed without requiring a system Python installation.'
     } else {
@@ -167,6 +169,7 @@ log_dir: '$logDirYaml'
     throw
 } finally {
     $env:PATH = $originalPath
+    Set-Location -LiteralPath $originalLocation
     Remove-Item Function:\py -ErrorAction SilentlyContinue
     if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
         Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue

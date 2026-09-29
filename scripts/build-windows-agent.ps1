@@ -44,8 +44,13 @@ try {
     Expand-Archive -LiteralPath $pythonArchive -DestinationPath $runtimeDirectory
 
     $pythonExe = (Resolve-Path -LiteralPath $BuildPython).Path
-    $hostVersion = (& $pythonExe -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")').Trim()
-    if ($LASTEXITCODE -ne 0 -or [version]$hostVersion -lt [version]'3.12') {
+    $hostVersionOutput = (& $pythonExe --version 2>&1 | Out-String).Trim()
+    $hostVersionMatch = [regex]::Match($hostVersionOutput, '^Python\s+(\d+\.\d+(?:\.\d+)?)$')
+    if ($LASTEXITCODE -ne 0 -or -not $hostVersionMatch.Success) {
+        throw "Could not read the build Python version from '$pythonExe': $hostVersionOutput"
+    }
+    $hostVersion = $hostVersionMatch.Groups[1].Value
+    if ([version]$hostVersion -lt [version]'3.12') {
         throw "Build Python 3.12+ is required; found $hostVersion at $pythonExe."
     }
 
