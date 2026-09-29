@@ -118,6 +118,64 @@ def test_causal_analysis_localizes_client_network_problem_from_contemporaneous_e
     assert packet["causal_analysis"]["confidence"] == "medium"
 
 
+def test_pts_lag_explanation_uses_safe_evidence_without_claiming_packet_loss():
+    now = datetime.now(timezone.utc)
+    clock = {"ntp_synchronized": True}
+    incident = _incident(opened_at=now + timedelta(seconds=1), context={
+        "timeline": [
+            {"timestamp": now.isoformat(), "agent": "private-server-name", "role": "SERVER_EGRESS", "status": "OK",
+             "metrics": {"profile": "LIGHT", "last_frame_age": 0.1, "fps": 50, "last_media_pts": 100, "clock": clock}, "events": []},
+            {"timestamp": (now + timedelta(seconds=1)).isoformat(), "agent": "predator-private-name", "role": "CLIENT", "status": "WARNING",
+             "metrics": {"profile": "LIGHT", "last_frame_age": 5, "last_media_pts": 90, "clock": clock},
+             "events": [{"code": "FREEZE_START", "severity": "WARNING", "details": {}}]},
+        ],
+        "media_correlation": {"tolerance_seconds": 5},
+        "media_lags": [{
+            "client": "predator-private-name", "server_egress": "private-server-name",
+            "client_pts": 90, "server_pts": 100, "lag_seconds": 10,
+            "sample_skew_seconds": 1, "client_profile": "LIGHT", "server_profile": "LIGHT",
+        }],
+    })
+
+    packet = explanations.build_evidence_packet(incident, [])
+    result = explanations.deterministic_explanation(packet)
+    serialized = json.dumps(packet)
+
+    assert packet["causal_analysis"]["cause_key"] == "NETWORK_PATH"
+    assert packet["causal_analysis"]["confidence"] == "low"
+    assert "10 с" in packet["causal_analysis"]["summary"]
+    assert "не доводить втрату RTMP-пакетів" in packet["causal_analysis"]["summary"]
+    assert result["evidence_ids"]
+    assert any(item["category"] == "media_timing" for item in packet["evidence"])
+    assert "predator-private-name" not in serialized
+    assert "private-server-name" not in serialized
+
+
+def test_stale_pts_lag_is_not_used_to_localize_network_path():
+    now = datetime.now(timezone.utc)
+    clock = {"ntp_synchronized": True}
+    incident = _incident(opened_at=now + timedelta(seconds=1), context={
+        "timeline": [
+            {"timestamp": now.isoformat(), "agent": "server", "role": "SERVER_EGRESS", "status": "OK",
+             "metrics": {"profile": "LIGHT", "last_frame_age": 0.1, "fps": 50, "last_media_pts": 100, "clock": clock}, "events": []},
+            {"timestamp": (now + timedelta(seconds=1)).isoformat(), "agent": "client", "role": "CLIENT", "status": "WARNING",
+             "metrics": {"profile": "LIGHT", "last_frame_age": 5, "last_media_pts": 90, "clock": clock},
+             "events": [{"code": "FREEZE_START", "severity": "WARNING", "details": {}}]},
+        ],
+        "media_correlation": {"tolerance_seconds": 5},
+        "media_lags": [{
+            "client": "client", "server_egress": "server", "client_pts": 90, "server_pts": 100,
+            "lag_seconds": 10, "sample_skew_seconds": 8,
+            "client_profile": "LIGHT", "server_profile": "LIGHT",
+        }],
+    })
+
+    packet = explanations.build_evidence_packet(incident, [])
+
+    assert packet["causal_analysis"]["cause_key"] == "DOWNSTREAM_PATH_UNCONFIRMED"
+    assert not any(item["category"] == "media_timing" for item in packet["evidence"])
+
+
 def test_unsynchronized_clocks_lower_cross_probe_network_confidence():
     now = datetime.now(timezone.utc)
     incident = _incident(context={"timeline": [

@@ -249,6 +249,16 @@ def _episode_assessment(packet: dict[str, Any], episode: dict[str, Any]) -> dict
     upstream_codes = {event.get("code") for sample in upstream_faults for event in sample.get("events", [])}
     egress_codes = {event.get("code") for sample in egress_faults for event in sample.get("events", [])}
     clock_uncertain = _cross_probe_clock_uncertain(samples)
+    media_pts_lags = [
+        item for item in packet.get("media_lags", [])
+        if item.get("episode") == episode_id
+        and item.get("client_profile") == "LIGHT"
+        and item.get("server_profile") == "LIGHT"
+        and _number(item.get("lag_seconds")) is not None
+        and item["lag_seconds"] > item["media_tolerance_seconds"]
+        and _number(item.get("sample_skew_seconds")) is not None
+        and abs(item["sample_skew_seconds"]) <= item["sample_skew_tolerance_seconds"]
+    ]
 
     if upstream_faults:
         matched = bool(upstream_codes & (egress_codes | client_codes))
@@ -290,8 +300,22 @@ def _episode_assessment(packet: dict[str, Any], episode: dict[str, Any]) -> dict
         key = "NETWORK_PATH"
         confidence = "low" if clock_uncertain else "medium"
         text = "SERVER_EGRESS продовжував віддавати медіа, а клієнтська проблема збіглася з конкретною мережевою ознакою. Найімовірніше, медіа пошкоджувалось або затримувалось на шляху до клієнта."
+        if media_pts_lags:
+            lag = max(media_pts_lags, key=lambda item: item["lag_seconds"])
+            text += f" Додатково, два LIGHT probe зафіксували різницю медіа PTS {lag['lag_seconds']:g} с при різниці часу отримання samples {abs(lag['sample_skew_seconds']):g} с; це підтверджує відставання клієнтської медіашкали, але не встановлює втрату пакетів або конкретний вузол мережі."
         if clock_uncertain:
             text += " Впевненість знижена, бо синхронізацію годинників між точками не підтверджено."
+        evidence_roles = {"SERVER_EGRESS", "CLIENT"}
+    elif client_faults and egress_clean and media_pts_lags and not clock_uncertain:
+        lag = max(media_pts_lags, key=lambda item: item["lag_seconds"])
+        key = "NETWORK_PATH"
+        confidence = "low"
+        text = (
+            f"Два LIGHT probe показали, що клієнтська медіа PTS відставала від SERVER_EGRESS на {lag['lag_seconds']:g} с "
+            f"(час отримання samples відрізнявся на {abs(lag['sample_skew_seconds']):g} с). Це вказує на затримку або відставання "
+            "після server egress, але сам PTS-розрив не доводить втрату RTMP-пакетів і не визначає конкретний мережевий вузол; "
+            "затримка приймання чи обробки на клієнті також можлива."
+        )
         evidence_roles = {"SERVER_EGRESS", "CLIENT"}
     elif client_faults and egress_clean:
         client_has_decode_error = bool("DECODE_ERROR" in client_codes or any((_number(sample.get("metrics", {}).get("decode_errors")) or 0) > 0 for sample in client_faults))
@@ -404,10 +428,40 @@ def build_evidence_packet(incident: Any, related: list[Any]) -> dict[str, Any]:
 
     episodes: list[dict[str, Any]] = []
     observations: list[dict[str, Any]] = []
+    media_lags: list[dict[str, Any]] = []
     for episode_index, item in enumerate(all_incidents, start=1):
         item_at = _incident_timestamp(item)
         seconds_from_primary = round((item_at - primary_at).total_seconds(), 1)
         context = item.context if isinstance(item.context, dict) else {}
+        correlation = context.get("media_correlation", {})
+        correlation = correlation if isinstance(correlation, dict) else {}
+        pts_tolerance = _number(correlation.get("tolerance_seconds"))
+        pts_tolerance = pts_tolerance if pts_tolerance is not None and pts_tolerance >= 0 else 5.0
+        raw_lags = context.get("media_lags", [])
+        for lag in (raw_lags if isinstance(raw_lags, list) else []):
+            if not isinstance(lag, dict):
+                continue
+            client_pts = _number(lag.get("client_pts"))
+            server_pts = _number(lag.get("server_pts"))
+            lag_seconds = _number(lag.get("lag_seconds"))
+            sample_skew = _number(lag.get("sample_skew_seconds"))
+            if None in (client_pts, server_pts, lag_seconds, sample_skew):
+                continue
+            client_profile = str(lag.get("client_profile", "")).upper()
+            server_profile = str(lag.get("server_profile", "")).upper()
+            media_lags.append({
+                "episode": episode_index,
+                "client": alias_for("CLIENT", lag.get("client")),
+                "server_egress": alias_for("SERVER_EGRESS", lag.get("server_egress")),
+                "client_pts": client_pts,
+                "server_pts": server_pts,
+                "lag_seconds": lag_seconds,
+                "sample_skew_seconds": sample_skew,
+                "media_tolerance_seconds": pts_tolerance,
+                "sample_skew_tolerance_seconds": pts_tolerance,
+                "client_profile": client_profile if client_profile in {"LIGHT", "DEEP"} else "UNKNOWN",
+                "server_profile": server_profile if server_profile in {"LIGHT", "DEEP"} else "UNKNOWN",
+            })
         timeline = context.get("timeline", [])
         timeline = timeline if isinstance(timeline, list) else []
         eventful = [sample for sample in timeline if isinstance(sample, dict) and (_safe_events(sample.get("events")) or str(sample.get("status", "OK")).upper() != "OK")]
@@ -518,6 +572,19 @@ def build_evidence_packet(incident: Any, related: list[Any]) -> dict[str, Any]:
                 sample_fact("network", f"{sample['probe']}: загальний лічильник Windows показав 0 повторних передач за цей інтервал; він не прив'язаний до RTMP-з'єднання і не доводить, що шлях був без проблем.")
             elif _number(network.get("rtt_ms")) is not None and network["rtt_ms"] <= 100:
                 sample_fact("network", f"{sample['probe']}: ICMP RTT становив {network['rtt_ms']:g} мс; це вимір доступності хоста, він сам по собі не доводить, що RTMP-медіа доставлялося без проблем.")
+    for lag in media_lags:
+        if (
+            lag["client_profile"] == "LIGHT"
+            and lag["server_profile"] == "LIGHT"
+            and lag["lag_seconds"] > lag["media_tolerance_seconds"]
+            and abs(lag["sample_skew_seconds"]) <= lag["sample_skew_tolerance_seconds"]
+        ):
+            add_fact(
+                "media_timing",
+                f"{lag['server_egress']} повідомив медіа PTS {lag['server_pts']:g} с, а {lag['client']} — {lag['client_pts']:g} с; різниця становить {lag['lag_seconds']:g} с при різниці отримання samples {abs(lag['sample_skew_seconds']):g} с. Це вимірює відставання медіашкали, а не фактичну втрату RTMP-пакетів.",
+                episode=lag["episode"],
+                probe=lag["client"],
+            )
     diagnoses = [item["diagnosis"] for item in episodes]
     repeated = sum(1 for value in diagnoses if value == str(incident.diagnosis))
     if repeated > 1:
@@ -542,6 +609,7 @@ def build_evidence_packet(incident: Any, related: list[Any]) -> dict[str, Any]:
         "primary_active": bool(incident.active),
         "episodes": episodes,
         "observations": observations,
+        "media_lags": media_lags,
         "evidence": evidence,
     }
     packet["causal_analysis"] = _causal_analysis(packet)

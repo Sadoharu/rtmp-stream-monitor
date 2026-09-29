@@ -156,7 +156,11 @@ def diagnose_observations(observations: list[dict[str, Any]], media_tolerance_se
     elif bad_clients:
         media_lags = _client_media_lags(egress, bad_clients)
         packet_timestamp_lag = any(
-            item["lag_seconds"] > media_tolerance_seconds and item["client_profile"] == "LIGHT" and item["server_profile"] == "LIGHT"
+            item["lag_seconds"] > media_tolerance_seconds
+            and item["client_profile"] == "LIGHT"
+            and item["server_profile"] == "LIGHT"
+            and item["sample_skew_seconds"] is not None
+            and abs(item["sample_skew_seconds"]) <= media_tolerance_seconds
             for item in media_lags
         )
         network_bad = any(_network_is_bad(item) for item in bad_clients) or packet_timestamp_lag
@@ -216,6 +220,8 @@ def correlate_stream(session: Session, stream_id: str, now: datetime | None = No
         observations.append({
             "role": agent.role,
             "name": agent.name,
+            "observed_at": _as_aware(telemetry.observed_at).isoformat(),
+            "received_at": _as_aware(telemetry.received_at).isoformat(),
             "status": telemetry.status,
             "metrics": telemetry.metrics or {},
             "events": telemetry.events or [],
@@ -353,23 +359,65 @@ def _media_correlation(observations: list[dict[str, Any]], tolerance_seconds: fl
             "tolerance_seconds": tolerance_seconds, "points": points}
 
 
+def _parse_observation_time(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return _as_aware(value)
+    if not isinstance(value, str):
+        return None
+    try:
+        return _as_aware(datetime.fromisoformat(value.replace("Z", "+00:00")))
+    except ValueError:
+        return None
+
+
 def _client_media_lags(egress: list[dict[str, Any]], clients: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    server_pts = [((item.get("metrics") or {}).get("last_media_pts"), item.get("name", "server")) for item in egress]
-    server_pts = [(float(value), name) for value, name in server_pts if isinstance(value, (int, float))]
+    server_pts = []
+    for item in egress:
+        metrics = item.get("metrics") or {}
+        value = metrics.get("last_media_pts")
+        if isinstance(value, (int, float)):
+            server_pts.append({
+                "pts": float(value),
+                "name": item.get("name", "server"),
+                "observed_at": item.get("observed_at"),
+                "received_at": item.get("received_at"),
+                "profile": metrics.get("profile"),
+            })
     lags = []
     for client in clients:
-        value = (client.get("metrics") or {}).get("last_media_pts")
+        client_metrics = client.get("metrics") or {}
+        value = client_metrics.get("last_media_pts")
         if not isinstance(value, (int, float)) or not server_pts:
             continue
-        closest, name = min(server_pts, key=lambda pair: abs(pair[0] - float(value)))
-        lags.append({"client": client.get("name", "client"), "server_egress": name,
-                     "client_pts": float(value), "server_pts": closest,
+        client_received_at = _parse_observation_time(client.get("received_at"))
+        timed_server_pts = []
+        for item in server_pts:
+            received_at = _parse_observation_time(item.get("received_at"))
+            if received_at is not None:
+                timed_server_pts.append((item, received_at))
+        if client_received_at is not None and timed_server_pts:
+            server_point, server_received_at = min(
+                timed_server_pts,
+                key=lambda pair: abs((pair[1] - client_received_at).total_seconds()),
+            )
+            sample_skew_seconds = round((client_received_at - server_received_at).total_seconds(), 3)
+        else:
+            server_point = min(server_pts, key=lambda item: abs(item["pts"] - float(value)))
+            server_received_at = _parse_observation_time(server_point.get("received_at"))
+            sample_skew_seconds = None
+        lags.append({"client": client.get("name", "client"), "server_egress": server_point["name"],
+                     "client_pts": float(value), "server_pts": server_point["pts"],
                      # Positive means the client is behind server egress. A
                      # client ahead of egress is a timestamp mismatch, not
                      # evidence of transport delay.
-                     "lag_seconds": round(closest - float(value), 3),
-                     "client_profile": (client.get("metrics") or {}).get("profile"),
-                     "server_profile": next(((item.get("metrics") or {}).get("profile") for item in egress if item.get("name") == name), None)})
+                     "lag_seconds": round(server_point["pts"] - float(value), 3),
+                     "sample_skew_seconds": sample_skew_seconds,
+                     "client_observed_at": client.get("observed_at"),
+                     "server_observed_at": server_point.get("observed_at"),
+                     "client_received_at": client.get("received_at"),
+                     "server_received_at": server_point.get("received_at"),
+                     "client_profile": client_metrics.get("profile"),
+                     "server_profile": server_point.get("profile")})
     return lags
 
 

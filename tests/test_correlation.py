@@ -1,14 +1,19 @@
+from datetime import datetime, timedelta, timezone
+
 from rtmp_monitor.correlation import diagnose_observations
 
 
-def report(role, name, status="OK", events=None, network=None):
-    return {
+def report(role, name, status="OK", events=None, network=None, received_at=None):
+    result = {
         "role": role,
         "name": name,
         "status": status,
         "events": events or [],
         "metrics": {"network": network or {}},
     }
+    if received_at is not None:
+        result["received_at"] = received_at
+    return result
 
 
 def broken(code="DECODE_ERROR", severity="CRITICAL"):
@@ -240,13 +245,31 @@ def test_stale_ffmpeg_progress_is_included_in_client_symptoms():
 
 
 def test_media_pts_lag_can_support_network_path_diagnosis():
-    egress = report("SERVER_EGRESS", "egress")
+    sampled_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    egress = report("SERVER_EGRESS", "egress", received_at=sampled_at)
     egress["metrics"].update({"last_media_pts": 100, "profile": "LIGHT"})
-    client = report("CLIENT", "client", "CRITICAL", broken("FREEZE_START"), {"tcp_retransmissions": 0, "rtt_ms": 4})
+    client = report("CLIENT", "client", "CRITICAL", broken("FREEZE_START"), {"tcp_retransmissions": 0, "rtt_ms": 4}, sampled_at + timedelta(seconds=1))
     client["metrics"].update({"last_media_pts": 90, "profile": "LIGHT"})
     result = diagnose_observations([egress, client])
     assert result["diagnosis"] == "NETWORK_PATH_PROBLEM"
     assert result["media_lags"][0]["lag_seconds"] == 10
+    assert result["media_lags"][0]["sample_skew_seconds"] == 1
+
+
+def test_stale_pts_samples_do_not_support_network_path_diagnosis():
+    sampled_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    egress = report("SERVER_EGRESS", "egress", received_at=sampled_at)
+    egress["metrics"].update({"last_media_pts": 100, "profile": "LIGHT"})
+    client = report(
+        "CLIENT", "client", "CRITICAL", broken("FREEZE_START"), {"tcp_retransmissions": 0, "rtt_ms": 4},
+        sampled_at + timedelta(seconds=8),
+    )
+    client["metrics"].update({"last_media_pts": 90, "profile": "LIGHT"})
+
+    result = diagnose_observations([egress, client])
+
+    assert result["diagnosis"] == "CLIENT_PROBLEM"
+    assert result["media_lags"][0]["sample_skew_seconds"] == 8
 
 
 def test_client_pts_ahead_of_egress_does_not_support_network_path_diagnosis():
