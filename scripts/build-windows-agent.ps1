@@ -111,6 +111,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $repoRoot 'README.md') -Destination $bundleRoot
     Copy-Item -LiteralPath (Join-Path $repoRoot 'LICENSE') -Destination $bundleRoot
     Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\windows-python.ps1') -Destination (Join-Path $bundleRoot 'scripts')
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\windows-install-guidance.ps1') -Destination (Join-Path $bundleRoot 'scripts')
 
     $embeddedPython = Join-Path $runtimeDirectory 'python.exe'
     & $embeddedPython -c 'import fastapi, psutil, rtmp_monitor, win32event, win32serviceutil, yaml'
