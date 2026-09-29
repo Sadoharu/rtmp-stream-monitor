@@ -148,15 +148,34 @@ class FrameAnalyzer:
 
 def parse_filter_event(line: str) -> dict | None:
     if "freezedetect" in line:
-        code = "FREEZE_START" if "freeze_start" in line else "FREEZE_END" if "freeze_end" in line else None
+        code = (
+            "FREEZE_START" if "freeze_start" in line else
+            "FREEZE_END" if "freeze_end" in line else
+            "FREEZE_DURATION" if "freeze_duration" in line else None
+        )
         if code:
             match = re.search(r"(?:freeze_start|freeze_end|freeze_duration):\s*(-?\d+(?:\.\d+)?)", line)
-            return {"code": code, "severity": "WARNING" if code == "FREEZE_START" else "INFO", "details": {"value": float(match.group(1)) if match else None, "message": line[-500:]}}
+            value = float(match.group(1)) if match else None
+            details = {"value": value, "message": line[-500:]}
+            if code == "FREEZE_DURATION":
+                details["duration_seconds"] = value
+            return {"code": code, "severity": "WARNING" if code == "FREEZE_START" else "INFO", "details": details}
     if "silencedetect" in line:
-        code = "SILENCE_START" if "silence_start" in line else "SILENCE_END" if "silence_end" in line else None
+        code = (
+            "SILENCE_START" if "silence_start" in line else
+            "SILENCE_END" if "silence_end" in line else
+            "SILENCE_DURATION" if "silence_duration" in line else None
+        )
         if code:
             match = re.search(r"(?:silence_start|silence_end|silence_duration):\s*(-?\d+(?:\.\d+)?)", line)
-            return {"code": code, "severity": "WARNING" if code == "SILENCE_START" else "INFO", "details": {"value": float(match.group(1)) if match else None, "message": line[-500:]}}
+            value = float(match.group(1)) if match else None
+            duration_match = re.search(r"silence_duration:\s*(-?\d+(?:\.\d+)?)", line)
+            details = {"value": value, "message": line[-500:]}
+            if code == "SILENCE_DURATION":
+                details["duration_seconds"] = value
+            elif duration_match:
+                details["duration_seconds"] = float(duration_match.group(1))
+            return {"code": code, "severity": "WARNING" if code == "SILENCE_START" else "INFO", "details": details}
     return None
 
 

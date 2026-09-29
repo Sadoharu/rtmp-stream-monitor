@@ -57,3 +57,20 @@ def test_new_epoch_ignores_timestamp_reset_after_reconnect():
 def test_ffmpeg_decode_diagnostics_are_structured():
     event = parse_diagnostic_line("[h264 @ 0x123] concealing 12 DC, 12 AC, 12 MV errors in I frame")
     assert event["code"] == "DECODE_ERROR"
+
+
+def test_freeze_and_silence_durations_are_structured_from_ffmpeg_logs():
+    freeze_start = parse_diagnostic_line("[freezedetect @ 0x1] lavfi.freezedetect.freeze_start: 2")
+    freeze_duration = parse_diagnostic_line("[freezedetect @ 0x1] lavfi.freezedetect.freeze_duration: 3")
+    freeze_end = parse_diagnostic_line("[freezedetect @ 0x1] lavfi.freezedetect.freeze_end: 5")
+    silence_end = parse_diagnostic_line("[silencedetect @ 0x1] silence_end: 8 | silence_duration: 4")
+
+    assert freeze_start["code"] == "FREEZE_START"
+    assert freeze_start["details"]["value"] == 2.0
+    assert freeze_duration["code"] == "FREEZE_DURATION"
+    assert freeze_duration["details"]["duration_seconds"] == 3.0
+    assert freeze_end["code"] == "FREEZE_END"
+    assert freeze_end["details"]["value"] == 5.0
+    assert silence_end["code"] == "SILENCE_END"
+    assert silence_end["details"]["value"] == 8.0
+    assert silence_end["details"]["duration_seconds"] == 4.0
