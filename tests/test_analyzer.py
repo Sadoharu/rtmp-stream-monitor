@@ -59,6 +59,19 @@ def test_ffmpeg_decode_diagnostics_are_structured():
     assert event["code"] == "DECODE_ERROR"
 
 
+def test_missing_reference_and_invalid_nal_diagnostics_are_decode_errors():
+    for line in (
+        "[h264 @ 0x1] reference picture missing during reorder",
+        "[h264 @ 0x1] Missing reference picture, default is 65536",
+        "[h264 @ 0x1] non-existing PPS 0 referenced",
+        "[h264 @ 0x1] Error splitting the input into NAL units.",
+    ):
+        event = parse_diagnostic_line(line)
+        assert event is not None
+        assert event["code"] == "DECODE_ERROR"
+        assert event["severity"] == "CRITICAL"
+
+
 def test_freeze_and_silence_durations_are_structured_from_ffmpeg_logs():
     freeze_start = parse_diagnostic_line("[freezedetect @ 0x1] lavfi.freezedetect.freeze_start: 2")
     freeze_duration = parse_diagnostic_line("[freezedetect @ 0x1] lavfi.freezedetect.freeze_duration: 3")

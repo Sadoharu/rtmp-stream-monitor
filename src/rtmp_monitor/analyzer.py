@@ -182,10 +182,14 @@ def parse_filter_event(line: str) -> dict | None:
 DECODE_ERROR_PATTERNS = (
     "error while decoding",
     "invalid nal",
+    "error splitting the input into nal units",
     "corrupt decoded frame",
     "concealing ",
     "no frame!",
     "missing picture in access unit",
+    "reference picture missing",
+    "missing reference picture",
+    "non-existing pps",
     "decode_slice_header error",
 )
 
