@@ -52,7 +52,7 @@ Copy-Item -Recurse -Force $sourceDir $stagedSourceDir
 if (Test-Path -LiteralPath $installedSourceDir) { Remove-Item -LiteralPath $installedSourceDir -Recurse -Force }
 Move-Item -LiteralPath $stagedSourceDir -Destination $installedSourceDir
 Copy-Item -Force (Join-Path $repo "pyproject.toml") $programDir
-& $pythonExe -m pip install --upgrade $programDir
+& $pythonExe -m pip install --upgrade $programDir 2>&1
 if ($LASTEXITCODE -ne 0) { throw "Failed to install RTMP Monitor into the machine-wide Python environment." }
 if (-not $installedConfigExists -or $ReplaceConfig) {
     Copy-Item -Force $resolvedConfig.Path $installedConfig
@@ -74,7 +74,7 @@ $configureToolsPath = Join-Path $env:TEMP ("rtmp-monitor-config-" + [guid]::NewG
 [System.IO.File]::WriteAllText($configureToolsPath, $configureTools, [System.Text.Encoding]::ASCII)
 $configureToolsExitCode = 1
 try {
-    & $pythonExe $configureToolsPath $installedConfig $ffmpegPath $ffprobePath
+    & $pythonExe $configureToolsPath $installedConfig $ffmpegPath $ffprobePath 2>&1
     $configureToolsExitCode = $LASTEXITCODE
 } finally {
     Remove-Item -LiteralPath $configureToolsPath -Force -ErrorAction SilentlyContinue
@@ -88,19 +88,19 @@ $allow = [System.Security.AccessControl.AccessControlType]::Allow
 $configAcl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule("SYSTEM","FullControl",$none,$noProp,$allow)))
 $configAcl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule("Administrators","FullControl",$none,$noProp,$allow)))
 Set-Acl -LiteralPath $installedConfig -AclObject $configAcl
-& $pythonExe -m pip install --upgrade "pywin32>=306"
+& $pythonExe -m pip install --upgrade "pywin32>=306" 2>&1
 if ($LASTEXITCODE -ne 0) { throw "Failed to install pywin32 into the machine-wide Python environment." }
-& $pythonExe -m win32.scripts.pywin32_postinstall -install -quiet
+& $pythonExe -m win32.scripts.pywin32_postinstall -install -quiet 2>&1
 if ($LASTEXITCODE -ne 0) { throw "pywin32 machine-wide post-install setup failed." }
 if ($existingService) {
-    & $pythonExe -m rtmp_monitor.windows_service_cli remove
+    & $pythonExe -m rtmp_monitor.windows_service_cli remove 2>&1
     if ($LASTEXITCODE -ne 0) { throw "Could not remove the previous RtmpMonitorAgent service." }
 }
-& $pythonExe -m rtmp_monitor.windows_service_cli --startup auto install
+& $pythonExe -m rtmp_monitor.windows_service_cli --startup auto install 2>&1
 if ($LASTEXITCODE -ne 0) { throw "Failed to install the RtmpMonitorAgent Windows service." }
-& sc.exe failure RtmpMonitorAgent reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null
+& sc.exe failure RtmpMonitorAgent reset= 86400 actions= restart/5000/restart/15000/restart/60000 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Failed to configure automatic recovery for the RtmpMonitorAgent Windows service." }
-& sc.exe failureflag RtmpMonitorAgent 1 | Out-Null
+& sc.exe failureflag RtmpMonitorAgent 1 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Failed to enable recovery for non-crash service errors." }
 Start-Service -Name RtmpMonitorAgent
 Write-Host "RTMP Monitor Agent service installed and started. Logs: $logDir"
