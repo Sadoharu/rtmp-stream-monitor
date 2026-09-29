@@ -53,6 +53,15 @@ jobs:
           path: ${{ runner.temp }}/windows-agent/*
           if-no-files-found: error
 
+  docker-compose-smoke:
+    name: Docker Compose backup / restore
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Exercise Compose build, health, backup, restore, and restart
+        shell: bash
+        run: bash scripts/docker-restore-smoke.sh
+
   windows-bundled-installer:
     name: Windows bundled service install / uninstall
     runs-on: windows-latest
