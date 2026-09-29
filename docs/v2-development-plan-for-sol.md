@@ -141,7 +141,7 @@ Docker Compose для центрального сервера спираєтьс
 - [ ] Перевірити в браузері live-графік потоку `poland`. Попередні live-запуски доводять тільки API series; контрольний dashboard перевірявся на локальному SRS fixture.
 - [ ] Перевірити на фізично незалежних хостах: `SERVER_EGRESS` та клієнти з інших Windows/Ubuntu мереж. Loopback сценарії цього не підтверджують.
 - [x] Повторно відтворити пошкодження H.264-пакетів, `DECODE_ERROR` у `DEEP` і відновлення декодування/бітрейту; деталі й команда — у звіті M6.
-- [ ] Перевірити діагностику packet loss на незалежних production-подібних probe й нижчих рівнях втрат: локально `tc netem` 50% дав `NETWORK_PATH_PROBLEM`; на 20% дві попередні спроби не локалізували збій, а нова зафіксувала `UNCONFIRMED` діагноз за PTS lag 5.731 s. Повторюваність на 20% і нижче не підтверджена; точний packet-loss rate не вимірюється, а bitstream corruption не є network packet loss.
+- [ ] Перевірити діагностику packet loss на незалежних production-подібних probe й нижчих рівнях втрат: локально `tc netem` 50% дав `NETWORK_PATH_PROBLEM`; після часового фільтра два прогони на 20% дали змішаний результат — один без діагнозу при 240 drops, інший з `UNCONFIRMED` за PTS lag 5.731 s при 211 drops. На 10% було 53 drops без мережевого діагнозу чи підтвердженої медіапроблеми. Повторюваність і межа чутливості не визначені; точний packet-loss rate продукт не вимірює, а bitstream corruption не є network packet loss.
 - [ ] Перевірити цільові production install/upgrade, міграцію Ubuntu systemd бази та rollback. Ubuntu smoke запускався в Docker Desktop на Windows, а не на сервері користувача.
 
 Деталі — у [M6 live validation](m6-live-validation.md).

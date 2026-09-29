@@ -1,6 +1,6 @@
 # M4 — центральний сервер у Docker Compose
 
-**Статус: Docker Desktop smoke з import у named volumes і запуском central пройшов; GitHub Actions зібрав central image з `main` без публікації (run 36629223132). Спроба анонімно стягнути Compose image `0.1.0` завершилася `denied`, а GitHub Packages API повернув `Package not found`: version package ще не опублікований. Release-tag publish і міграція/rollback на цільовому Ubuntu-сервері лишаються відкритими.** Systemd-інсталятор збережено як альтернативу та шлях rollback.
+**Статус: Docker Desktop smoke з import у named volumes і запуском central пройшов; GitHub Actions зібрав central image з `main` без публікації (run 36629223132). Спроба анонімно стягнути Compose image `0.1.0` завершилася `denied`, а GitHub Packages API повернув `Package not found`: version package ще не опублікований. Перевірка `gh release list` і локальних `v*` tags також не знайшла випуску. Release-tag publish і міграція/rollback на цільовому Ubuntu-сервері лишаються відкритими.** Systemd-інсталятор збережено як альтернативу та шлях rollback.
 
 ## Реалізовано
 

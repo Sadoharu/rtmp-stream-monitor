@@ -129,6 +129,10 @@ At 20% loss, the product did not emit an explicit network-path diagnosis: the ti
 
 One further 20% run after adding the contemporaneous-sample gate recorded 211 qdisc drops, nine positive `SERVER_EGRESS` buckets averaging `1.005 Mbps`, and a `5.731 s` PTS lag; the app emitted an `UNCONFIRMED` `NETWORK_PATH_PROBLEM` before recovery. Both clients stayed connected and published fresh measured telemetry after the fault. Earlier 20% runs did not localize the issue, so the diagnosis remains dependent on the observed media lag and has not yet been proven consistent at this loss level.
 
+A 10% run recorded 53 qdisc drops and nine positive `SERVER_EGRESS` buckets averaging `1.048 Mbps`; no `NETWORK_PATH_PROBLEM` was emitted. `PTS_REGRESSION` appeared on the deep probe during the run/recovery window, but it is not attributed to the injected loss. The clients remained connected and sent fresh measured telemetry after recovery. This run provides no evidence that the 10% fault produced a user-visible media interruption in these probes.
+
+A repeat at 20% recorded 240 qdisc drops and nine positive `SERVER_EGRESS` buckets averaging `1.013 Mbps`. It emitted only `PTS_REGRESSION` / `AV_TIMESTAMP_DRIFT`, not `NETWORK_PATH_PROBLEM`; both clients stayed connected and supplied fresh measured telemetry after recovery. Together with the 211-drop run that did localize a 5.731 s media lag, this leaves the 20% diagnosis inconsistent across runs.
+
 Reproduce with:
 
 ```powershell
