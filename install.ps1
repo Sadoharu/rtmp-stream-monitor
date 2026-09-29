@@ -70,8 +70,16 @@ config["ffmpeg_path"] = sys.argv[2]
 config["ffprobe_path"] = sys.argv[3]
 path.write_text(yaml.safe_dump(config, sort_keys=False, allow_unicode=True), encoding="utf-8")
 '@
-& $pythonExe -c $configureTools $installedConfig $ffmpegPath $ffprobePath
-if ($LASTEXITCODE -ne 0) { throw "Failed to configure machine-wide FFmpeg paths for the Windows service." }
+$configureToolsPath = Join-Path $env:TEMP ("rtmp-monitor-config-" + [guid]::NewGuid().ToString() + ".py")
+[System.IO.File]::WriteAllText($configureToolsPath, $configureTools, [System.Text.Encoding]::ASCII)
+$configureToolsExitCode = 1
+try {
+    & $pythonExe $configureToolsPath $installedConfig $ffmpegPath $ffprobePath
+    $configureToolsExitCode = $LASTEXITCODE
+} finally {
+    Remove-Item -LiteralPath $configureToolsPath -Force -ErrorAction SilentlyContinue
+}
+if ($configureToolsExitCode -ne 0) { throw "Failed to configure machine-wide FFmpeg paths for the Windows service." }
 $configAcl = New-Object System.Security.AccessControl.FileSecurity
 $configAcl.SetAccessRuleProtection($true, $false)
 $none = [System.Security.AccessControl.InheritanceFlags]::None
