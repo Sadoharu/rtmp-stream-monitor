@@ -184,6 +184,26 @@ def test_matching_upstream_media_error_localizes_source_ingest():
     assert packet["causal_analysis"]["confidence"] == "medium"
 
 
+def test_unsynchronized_clocks_prevent_claim_that_upstream_error_propagated():
+    now = datetime.now(timezone.utc)
+    error = [{"code": "PTS_REGRESSION", "severity": "WARNING", "details": {}}]
+    clock = {"ntp_synchronized": False}
+    incident = _incident(context={"timeline": [
+        {"timestamp": now.isoformat(), "agent": "source", "role": "SOURCE", "status": "WARNING",
+         "metrics": {"profile": "DEEP", "clock": clock}, "events": error},
+        {"timestamp": (now + timedelta(seconds=1)).isoformat(), "agent": "server", "role": "SERVER_EGRESS", "status": "WARNING",
+         "metrics": {"profile": "DEEP", "clock": clock}, "events": error},
+        {"timestamp": (now + timedelta(seconds=2)).isoformat(), "agent": "client", "role": "CLIENT", "status": "WARNING",
+         "metrics": {"profile": "DEEP", "clock": clock}, "events": error},
+    ]})
+
+    analysis = explanations.build_evidence_packet(incident, [])["causal_analysis"]
+
+    assert analysis["cause_key"] == "UPSTREAM_OR_SERVER_UNCONFIRMED"
+    assert analysis["confidence"] == "low"
+    assert "Не можна надійно встановити" in analysis["summary"]
+
+
 def test_old_pts_event_in_a_related_episode_does_not_explain_current_client_fault():
     now = datetime.now(timezone.utc)
     current = _incident(opened_at=now, context={"timeline": [

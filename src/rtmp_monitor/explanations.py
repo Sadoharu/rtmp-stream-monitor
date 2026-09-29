@@ -245,15 +245,20 @@ def _episode_assessment(packet: dict[str, Any], episode: dict[str, Any]) -> dict
     clock_uncertain = _cross_probe_clock_uncertain(samples)
 
     if upstream_faults:
-        key = "SOURCE_OR_INGEST"
         matched = bool(upstream_codes & (egress_codes | client_codes))
-        confidence = "medium" if matched else "low"
-        text = (
-            "Медіапомилка вже зафіксована на SOURCE / SERVER_INGRESS і повторюється далі по тракту. "
-            "Це вказує на джерело або вхід сервера, а не на декодер віддаленого клієнта."
-            if matched else
-            "Медіапомилка зафіксована на SOURCE / SERVER_INGRESS. Подальше поширення цього симптому не підтверджене наявними samples."
-        )
+        if clock_uncertain:
+            key = "UPSTREAM_OR_SERVER_UNCONFIRMED"
+            confidence = "low"
+            text = "SOURCE / SERVER_INGRESS і downstream probes зафіксували однаковий код медіапомилки, але синхронізацію їхніх годинників не підтверджено. Не можна надійно встановити, чи це той самий інцидент і де він почався; upstream є точкою для перевірки, а не доведеною причиною."
+        else:
+            key = "SOURCE_OR_INGEST"
+            confidence = "medium" if matched else "low"
+            text = (
+                "Медіапомилка зафіксована на SOURCE / SERVER_INGRESS і той самий симптом видно далі по тракту. "
+                "Це вказує на джерело або вхід сервера, а не на окрему проблему декодера клієнта."
+                if matched else
+                "Медіапомилка зафіксована на SOURCE / SERVER_INGRESS. Подальше поширення цього симптому не підтверджене наявними samples."
+            )
         evidence_roles = {sample["role"] for sample in upstream_faults}
     elif egress_faults:
         if ingress_clean and not clock_uncertain:
