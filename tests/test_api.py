@@ -130,6 +130,69 @@ def test_out_of_order_healthy_sample_does_not_resolve_newer_incident(tmp_path):
     assert incidents[0]["resolved_at"] is None
 
 
+def test_out_of_order_different_diagnosis_does_not_open_second_active_incident(tmp_path):
+    admin_file = tmp_path / "admin.token"
+    app = create_app(CentralFileConfig(
+        database_url=f"sqlite:///{(tmp_path / 'central.db').as_posix()}",
+        admin_token_file=admin_file,
+    ))
+    admin = admin_file.read_text(encoding="utf-8").strip()
+    base = datetime.now(timezone.utc) - timedelta(minutes=2)
+    with TestClient(app) as client:
+        headers = {"Authorization": f"Bearer {admin}"}
+        client.post("/api/v1/streams", headers=headers, json={"id": "demo", "name": "demo"})
+        egress = client.post("/api/v1/agents", headers=headers, json={
+            "name": "egress", "location": "server", "platform": "Ubuntu",
+            "role": "SERVER_EGRESS", "stream_id": "demo",
+        })
+        probe = client.post("/api/v1/agents", headers=headers, json={
+            "name": "client", "location": "studio", "platform": "Windows",
+            "role": "CLIENT", "stream_id": "demo",
+        })
+        egress_headers = {"Authorization": f"Bearer {egress.json()['token']}"}
+        client_headers = {"Authorization": f"Bearer {probe.json()['token']}"}
+        current_at = base + timedelta(seconds=30)
+        healthy_egress = client.post("/api/v1/ingest", headers=egress_headers, json={"items": [{
+            "sample_id": "egress-current",
+            "stream_id": "demo",
+            "observed_at": current_at.isoformat(),
+            "status": "OK",
+            "metrics": {"last_frame_age": 0.1},
+            "events": [],
+            "context": {},
+        }]})
+        assert healthy_egress.status_code == 200
+        current_client = client.post("/api/v1/ingest", headers=client_headers, json={"items": [{
+            "sample_id": "client-current",
+            "stream_id": "demo",
+            "observed_at": current_at.isoformat(),
+            "status": "CRITICAL",
+            "metrics": {"network": {"provider": "windows", "tcp_retransmissions": 0, "rtt_ms": 4}},
+            "events": [{"code": "FREEZE_START", "severity": "CRITICAL", "details": {}}],
+            "context": {},
+        }]})
+        assert current_client.status_code == 200
+
+        delayed_client = client.post("/api/v1/ingest", headers=client_headers, json={"items": [{
+            "sample_id": "client-delayed-network-symptom",
+            "stream_id": "demo",
+            "observed_at": (base + timedelta(seconds=10)).isoformat(),
+            "status": "CRITICAL",
+            "metrics": {"network": {
+                "provider": "linux", "tcp_retransmissions": 3,
+                "sample_age_seconds": 0, "sample_interval_seconds": 10,
+            }},
+            "events": [{"code": "FREEZE_START", "severity": "CRITICAL", "details": {}}],
+            "context": {},
+        }]})
+        assert delayed_client.status_code == 200
+        incidents = client.get("/api/v1/incidents?active=true", headers=headers).json()
+
+    assert len(incidents) == 1
+    assert incidents[0]["diagnosis"] == "CLIENT_PROBLEM"
+    assert incidents[0]["opened_at"] == current_at.isoformat()
+
+
 def test_batch_correlates_transient_freeze_before_recovery(tmp_path):
     admin_file = tmp_path / "admin.token"
     app = create_app(CentralFileConfig(

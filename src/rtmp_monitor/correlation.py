@@ -230,6 +230,13 @@ def correlate_stream(session: Session, stream_id: str, now: datetime | None = No
         _refresh_recent_resolved_contexts(session, stream_id, now)
         return None
 
+    newer_active = [item for item in active if _as_aware(item.opened_at) > _as_aware(now)]
+    if newer_active:
+        # A delayed queue replay can reveal a different old diagnosis after a
+        # newer incident is already active. Keep the current stream state; raw
+        # telemetry still retains that older observation for timeline review.
+        return max(newer_active, key=lambda item: _as_aware(item.opened_at))
+
     fingerprint = f"stream:{stream_id}:{result['diagnosis']}"
     existing = session.scalar(select(Incident).where(Incident.fingerprint == fingerprint, Incident.active.is_(True)).order_by(Incident.opened_at.desc()))
     if existing and _as_aware(now) < _as_aware(existing.updated_at):

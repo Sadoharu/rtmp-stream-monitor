@@ -29,6 +29,8 @@ The backend compares the latest sample from each probe over a 20-second wall-clo
 
 The PTS lag is directional: positive means the client is behind server egress. A client PTS ahead of server egress is a timestamp mismatch and does not independently support a network-path diagnosis.
 
+Incident evaluation uses telemetry observation time. Delayed samples replayed from an agent outbox remain available in raw telemetry, but cannot resolve or replace an incident that began later; a long-running active diagnosis stays one incident until the probes report recovery or a newer diagnosis.
+
 RTMP over TCP does not expose a frame identity shared by independent decoders. Wall-clock offset, buffering, retransmission and path asymmetry limit root-cause certainty. The dashboard therefore presents a probable location, symptoms, samples and diagnostic excerpts instead of claiming proof.
 
 ## Transport and time sources
