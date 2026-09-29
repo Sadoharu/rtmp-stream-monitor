@@ -49,7 +49,9 @@ EOF
 chmod 600 .env
 
 docker compose config -q
+echo "Building central image for isolated Compose project $project_name."
 docker compose build central
+echo "Initializing the isolated named volumes."
 bash ./scripts/docker-init-volumes.sh
 docker compose up -d central
 
@@ -66,12 +68,16 @@ if [[ "$healthy" != true ]]; then
   echo "Central service did not become healthy at $base_url." >&2
   exit 1
 fi
+echo "Central health endpoint became ready. Checking its SQLite volume as the service user."
+docker compose exec -T central python -c \
+  'import sqlite3; db=sqlite3.connect("/data/central.db"); db.execute("BEGIN IMMEDIATE"); db.rollback(); db.close(); print("SQLite volume write check passed.")'
 
 admin_token="$(docker compose exec -T central cat /data/admin.token | tr -d '\r\n')"
 if [[ -z "$admin_token" ]]; then
   echo "Central did not create an admin token." >&2
   exit 1
 fi
+echo "Read the generated admin token; creating the pre-backup stream through the authenticated API."
 
 create_stream() {
   local stream_id="$1"
@@ -91,6 +97,7 @@ assert_stream_ids() {
 
 create_stream restore_keep
 assert_stream_ids restore_keep
+echo "Pre-backup API state is ready; creating a verified backup."
 bash ./scripts/docker-backup.sh
 backup="$(find backups -maxdepth 1 -type f -name 'central-*.tar.gz' -print -quit)"
 if [[ -z "$backup" ]]; then
@@ -100,6 +107,7 @@ fi
 
 create_stream restore_remove
 assert_stream_ids restore_keep restore_remove
+echo "Post-backup API mutation is ready; restoring the earlier backup."
 bash ./scripts/docker-restore.sh "$backup"
 assert_stream_ids restore_keep
 restored_token="$(docker compose exec -T central cat /data/admin.token | tr -d '\r\n')"
