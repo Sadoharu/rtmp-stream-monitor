@@ -10,6 +10,8 @@ if ($LASTEXITCODE -ne 0 -or [version]$pythonVersion -lt [version]'3.12') {
 $serviceName = 'RtmpMonitorAgent'
 $programDir = Join-Path $env:ProgramFiles 'RTMPMonitor'
 $dataDir = Join-Path $env:ProgramData 'RTMPMonitor'
+$pythonAlias = Join-Path $env:ProgramFiles ('PythonRTMPMonitorCI-' + [guid]::NewGuid().ToString())
+$pythonAliasCreated = $false
 $tempRoot = Join-Path $env:TEMP ('rtmp-monitor-installer-' + [guid]::NewGuid().ToString())
 $tempPrefix = [System.IO.Path]::GetFullPath($env:TEMP).TrimEnd('\') + '\'
 $programDirWasAbsent = -not (Test-Path -LiteralPath $programDir)
@@ -34,6 +36,16 @@ $originalPath = $env:PATH
 try {
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
     New-Item -ItemType Directory -Path $testBin -Force | Out-Null
+    New-Item -ItemType Junction -Path $pythonAlias -Target (Split-Path -Parent $pythonExe) | Out-Null
+    $pythonAliasCreated = $true
+    . (Join-Path $repoRoot 'scripts\windows-python.ps1')
+    function py {
+        throw 'The production installer must not fall back to the per-user Python launcher when a machine Python is present.'
+    }
+    $resolvedPython = Resolve-RtmpMonitorPython
+    $pythonExe = $resolvedPython.Path
+    $pythonVersion = $resolvedPython.Version.ToString(2)
+
     Copy-Item -LiteralPath (Join-Path $env:WINDIR 'System32\where.exe') -Destination (Join-Path $testBin 'ffmpeg.exe')
     Copy-Item -LiteralPath (Join-Path $env:WINDIR 'System32\where.exe') -Destination (Join-Path $testBin 'ffprobe.exe')
     $env:PATH = "$testBin;$env:PATH"
@@ -59,8 +71,12 @@ log_dir: '$logDirYaml'
 "@
     Set-Content -LiteralPath $configPath -Value $testConfig -Encoding utf8
 
-    & .\install.ps1 -ConfigPath $configPath -PythonPath $pythonExe
+    $installerOutput = (& .\install.ps1 -ConfigPath $configPath 2>&1 | Out-String)
     if ($LASTEXITCODE -ne 0) { throw 'The production install.ps1 returned a failure exit code.' }
+    Write-Host $installerOutput
+    if ($installerOutput -notmatch [regex]::Escape("Using Python $pythonVersion at $pythonExe")) {
+        throw "Production install.ps1 did not use the auto-discovered machine-wide Python $pythonExe."
+    }
 
     & sc.exe qfailure $serviceName
     if ($LASTEXITCODE -ne 0) { throw 'Windows service recovery actions were not configured.' }
@@ -102,6 +118,7 @@ log_dir: '$logDirYaml'
     throw
 } finally {
     $env:PATH = $originalPath
+    Remove-Item Function:\py -ErrorAction SilentlyContinue
     if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
         Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
         $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
@@ -122,6 +139,11 @@ log_dir: '$logDirYaml'
     if ($dataDirWasAbsent -and (Test-Path -LiteralPath $dataDir)) {
         if ([System.IO.Path]::GetFullPath($dataDir) -eq [System.IO.Path]::GetFullPath((Join-Path $env:ProgramData 'RTMPMonitor'))) {
             Remove-Item -LiteralPath $dataDir -Recurse -Force
+        }
+    }
+    if ($pythonAliasCreated -and (Test-Path -LiteralPath $pythonAlias)) {
+        if ([System.IO.Path]::GetFullPath($pythonAlias).StartsWith([System.IO.Path]::GetFullPath($env:ProgramFiles).TrimEnd('\') + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+            [System.IO.Directory]::Delete($pythonAlias, $false)
         }
     }
     if (Test-Path -LiteralPath $tempRoot) {
