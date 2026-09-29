@@ -89,7 +89,7 @@ This verifies reproducible bitstream damage, a decode diagnostic, and frame/bitr
 ## What remains unverified for M6
 
 - A simultaneous real `SERVER_EGRESS` probe and at least two clients on separate Windows/Ubuntu hosts are not available from this workstation. The three-probe localization chain cannot be accepted from same-host client probes.
-- Controlled video-freeze, configured long-GOP/keyframe-gap, RTMP server-restart, client-only TCP outage, and deterministic H.264 bitstream corruption/recovery scenarios were induced against isolated localhost SRS sources. The freeze reached the browser; the other scenarios reached the V2 API with expected markers, reconnects, and recovered measurements. A loopback proxy outage verifies client disconnection while `SERVER_EGRESS` continues to measure direct SRS output. Actual network packet loss remains unverified end-to-end.
+- Controlled video-freeze, configured long-GOP/keyframe-gap, RTMP server-restart, client-only TCP outage, deterministic H.264 bitstream corruption/recovery, and injected RTMP-path IP packet loss/recovery scenarios were induced against isolated SRS sources. The freeze reached the browser; the other scenarios reached the V2 API with recovered measurements. The network-loss harness confirmed actual drops with `tc`, but the product did not diagnose them; independent-site localization and a production per-flow packet-loss signal remain unverified.
 - The multi-probe API was exercised against a real feed. Browser rendering and evidence-card interaction were verified for the controlled local fixture; browser graph interaction for the live user feed remains unchecked. Earlier four-series load views were checked separately as noted in M2.
 - No PostgreSQL deployment or migration of the user's Ubuntu systemd database was performed. Clean Windows/Ubuntu installs, real upgrade/rollback, and self-contained Windows/Ubuntu packages are still open under M4/M5.
 
@@ -114,3 +114,17 @@ py -3.12 scripts/live-client-outage-smoke.py --outage-after 10 --outage-duration
 ```
 
 This is a controlled loopback connection outage on one Windows host. It does not verify packet corruption/loss, an ISP path, or independent physical observation sites. It also does not turn the test's injected cause into evidence available in a production incident unless probes observe the corresponding server-egress and client TCP states.
+
+## Injected RTMP-path IP packet loss — 2026-09-30
+
+The same [client-outage smoke](../scripts/live-client-outage-smoke.py) now supports `--packet-loss-percent`. It builds a small Linux relay container with `tc` and applies `tc netem loss` to the relay's egress interface during the fault window. The publisher and `SERVER_EGRESS` continue connecting directly to SRS; only the two client RTMP sessions pass through the lossy relay. The harness reads `tc`'s qdisc counters, so the injected loss is confirmed at the network layer rather than inferred from media corruption or a bitrate dip.
+
+Two runs used 20% loss for 8 seconds. The relay reported 299 and 270 dropped packets. In both runs, direct `SERVER_EGRESS` stayed healthy and returned eight positive measured buckets (mean `1.037 Mbps` and `0.997 Mbps`). Both Windows clients stayed TCP-connected (zero reconnects) and submitted fresh measured telemetry after loss was removed. No Docker container or network from the smoke remained after cleanup.
+
+The product did not emit an explicit packet-loss diagnosis: the timeline only contained `PTS_REGRESSION` / `AV_TIMESTAMP_DRIFT` around recovery. Those events are not attributed to the injected loss. The test confirms real IP packet loss on the client RTMP path and successful measurement recovery; it does not prove that a deployed probe can attribute a production incident to packet loss. The harness knows which packets it dropped, while current Windows host-wide transport counters cannot associate retransmits with a particular RTMP flow. Independent client/server observation sites and a production-grade per-flow signal remain necessary for localization.
+
+Reproduce with:
+
+```powershell
+py -3.12 scripts/live-client-outage-smoke.py --packet-loss-percent 20 --outage-after 6 --outage-duration 8 --recovery-timeout 35
+```

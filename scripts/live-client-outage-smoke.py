@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify client-only RTMP disconnect and recovery through a loopback TCP proxy."""
+"""Verify client-only RTMP outage or IP packet loss while server egress stays healthy."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import socket
 import subprocess
 import tempfile
@@ -164,6 +165,68 @@ class ClientRtmpProxy:
         await self.interrupt_clients()
 
 
+class DockerNetemClientProxy:
+    """RTMP relay in its own Linux network namespace with optional tc loss."""
+
+    def __init__(self, listen_port: int, network_name: str, target_name: str = "srs") -> None:
+        suffix = uuid.uuid4().hex[:10]
+        self.listen_port = listen_port
+        self.network_name = network_name
+        self.target_name = target_name
+        self.container = f"rtmp-m6-netem-{suffix}"
+        self.image = f"rtmp-m6-netem-proxy:{suffix}"
+        self.image_built = False
+        self.container_started = False
+        self.context = Path(__file__).resolve().parent / "netem-proxy"
+
+    async def start(self) -> None:
+        await asyncio.to_thread(
+            docker, "build", "--quiet", "--tag", self.image, str(self.context), timeout=180
+        )
+        self.image_built = True
+        await asyncio.to_thread(
+            docker, "run", "--detach", "--rm", "--name", self.container,
+            "--cap-add", "NET_ADMIN", "--network", self.network_name,
+            "--publish", f"127.0.0.1:{self.listen_port}:1935",
+            "--env", f"RTMP_TARGET_HOST={self.target_name}",
+            self.image, timeout=30,
+        )
+        self.container_started = True
+        await asyncio.to_thread(wait_for_listener, self.listen_port, 30)
+
+    async def set_packet_loss(self, percent: float) -> None:
+        await asyncio.to_thread(
+            docker, "exec", self.container, "tc", "qdisc", "replace", "dev", "eth0",
+            "root", "netem", "loss", f"{percent:g}%",
+        )
+
+    async def clear_packet_loss(self) -> None:
+        await asyncio.to_thread(
+            docker, "exec", self.container, "tc", "qdisc", "del", "dev", "eth0", "root"
+        )
+
+    async def dropped_packet_count(self) -> int:
+        output = await asyncio.to_thread(docker, "exec", self.container, "tc", "-s", "qdisc", "show", "dev", "eth0")
+        match = re.search(r"\bdropped\s+(\d+)\b", output)
+        if not match:
+            raise RuntimeError(f"Unable to read tc netem drop counter: {output}")
+        return int(match.group(1))
+
+    async def close(self) -> None:
+        if self.container_started:
+            await asyncio.to_thread(
+                subprocess.run, ["docker", "rm", "--force", self.container],
+                capture_output=True, text=True, timeout=30,
+            )
+            self.container_started = False
+        if self.image_built:
+            await asyncio.to_thread(
+                subprocess.run, ["docker", "image", "rm", "--force", self.image],
+                capture_output=True, text=True, timeout=30,
+            )
+            self.image_built = False
+
+
 async def start_publisher(port: int, stream_key: str) -> asyncio.subprocess.Process:
     url = f"rtmp://127.0.0.1:{port}/live/{stream_key}"
     command = [
@@ -230,9 +293,41 @@ async def wait_for_recovery(
     raise TimeoutError(f"Probes did not reconnect and recover measured media: {json.dumps(last, ensure_ascii=False)}")
 
 
+async def wait_for_fresh_measured(
+    base: str,
+    token: str,
+    stream_id: str,
+    agent_ids: set[str],
+    after: datetime,
+    timeout: float,
+) -> dict[str, dict]:
+    deadline = time.monotonic() + timeout
+    last: dict[str, dict] = {}
+    while time.monotonic() < deadline:
+        last = await dashboard_agents(base, token, stream_id, agent_ids)
+        fresh = {}
+        for agent_id, item in last.items():
+            try:
+                seen_at = datetime.fromisoformat(item["last_seen_at"].replace("Z", "+00:00"))
+            except (KeyError, AttributeError, TypeError, ValueError):
+                continue
+            metrics = item.get("metrics", {})
+            if (
+                seen_at > after
+                and metrics.get("received_media_bitrate_quality") == "MEASURED"
+                and (metrics.get("received_media_bitrate_bps") or 0) > 0
+                and metrics.get("ffmpeg_running") is True
+            ):
+                fresh[agent_id] = item
+        if fresh.keys() == agent_ids:
+            return fresh
+        await asyncio.sleep(1)
+    raise TimeoutError(f"Probes did not publish fresh measured media after packet-loss recovery: {json.dumps(last, ensure_ascii=False)}")
+
+
 async def run_fault_window(
     configs: list[AgentFileConfig],
-    proxy: ClientRtmpProxy,
+    proxy: ClientRtmpProxy | DockerNetemClientProxy,
     srs_port: int,
     base: str,
     token: str,
@@ -242,7 +337,8 @@ async def run_fault_window(
     outage_after: float,
     outage_duration: float,
     recovery_timeout: float,
-) -> tuple[datetime, datetime, datetime, dict[str, dict], dict[str, dict]]:
+    packet_loss_percent: float | None = None,
+) -> tuple[datetime, datetime, datetime, dict[str, dict], dict[str, dict], int | None]:
     tasks: list[asyncio.Task] = []
     publisher: asyncio.subprocess.Process | None = None
     try:
@@ -258,24 +354,49 @@ async def run_fault_window(
         }
         await asyncio.sleep(outage_after)
         interrupted_at = datetime.now(timezone.utc)
-        active_connections = await proxy.interrupt_clients()
-        print(
-            f"Closing {active_connections} client RTMP sockets at {interrupted_at.isoformat()}; "
-            f"publisher remains connected directly to SRS.", flush=True
-        )
-        if active_connections < 1:
-            raise RuntimeError("No active client RTMP session was present at the outage start")
-        await asyncio.sleep(outage_duration)
-        if publisher.returncode is not None:
-            raise RuntimeError("The direct-to-SRS publisher exited during the client-only outage")
-        await proxy.restore()
-        restored_at = datetime.now(timezone.utc)
-        print(f"Restored client forwarding at {restored_at.isoformat()}.", flush=True)
-        recovered = await wait_for_recovery(
-            base, token, stream_id, client_ids, reconnect_baseline, timeout=recovery_timeout
-        )
+        dropped_packets: int | None = None
+        if packet_loss_percent is None:
+            assert isinstance(proxy, ClientRtmpProxy)
+            active_connections = await proxy.interrupt_clients()
+            print(
+                f"Closing {active_connections} client RTMP sockets at {interrupted_at.isoformat()}; "
+                f"publisher remains connected directly to SRS.", flush=True
+            )
+            if active_connections < 1:
+                raise RuntimeError("No active client RTMP session was present at the outage start")
+            await asyncio.sleep(outage_duration)
+            if publisher.returncode is not None:
+                raise RuntimeError("The direct-to-SRS publisher exited during the client-only outage")
+            await proxy.restore()
+            restored_at = datetime.now(timezone.utc)
+            print(f"Restored client forwarding at {restored_at.isoformat()}.", flush=True)
+            recovered = await wait_for_recovery(
+                base, token, stream_id, client_ids, reconnect_baseline, timeout=recovery_timeout
+            )
+        else:
+            assert isinstance(proxy, DockerNetemClientProxy)
+            await proxy.set_packet_loss(packet_loss_percent)
+            print(
+                f"Applied {packet_loss_percent:g}% IP packet loss to the isolated client proxy at "
+                f"{interrupted_at.isoformat()}; publisher and SERVER_EGRESS remain direct to SRS.", flush=True
+            )
+            await asyncio.sleep(outage_duration)
+            if publisher.returncode is not None:
+                raise RuntimeError("The direct-to-SRS publisher exited during the client packet-loss window")
+            dropped_packets = await proxy.dropped_packet_count()
+            await proxy.clear_packet_loss()
+            restored_at = datetime.now(timezone.utc)
+            print(
+                f"Removed packet loss at {restored_at.isoformat()}; tc recorded {dropped_packets} dropped packets.",
+                flush=True,
+            )
+            if dropped_packets < 1:
+                raise RuntimeError("tc netem did not report any dropped IP packets")
+            recovered = await wait_for_fresh_measured(
+                base, token, stream_id, client_ids, restored_at, timeout=recovery_timeout
+            )
         recovered_at = datetime.now(timezone.utc)
-        return interrupted_at, restored_at, recovered_at, baseline, recovered
+        return interrupted_at, restored_at, recovered_at, baseline, recovered, dropped_packets
     finally:
         if publisher and publisher.returncode is None:
             publisher.terminate()
@@ -293,13 +414,20 @@ async def run_fault_window(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--srs-image", default="ossrs/srs:6.0.184")
-    parser.add_argument("--outage-after", type=float, default=10)
-    parser.add_argument("--outage-duration", type=float, default=8)
+    parser.add_argument("--outage-after", type=float, default=10, help="seconds before injecting the client-path fault")
+    parser.add_argument("--outage-duration", type=float, default=8, help="duration of the outage or packet-loss window")
     parser.add_argument("--recovery-timeout", type=float, default=35)
+    parser.add_argument(
+        "--packet-loss-percent",
+        type=float,
+        help="inject real IP packet loss on an isolated Linux client proxy instead of closing RTMP sockets",
+    )
     parser.add_argument("--profiles", nargs="+", choices=("DEEP", "LIGHT"), default=("LIGHT", "DEEP"))
     args = parser.parse_args()
     if args.outage_after < 5 or args.outage_duration < 2 or args.recovery_timeout < 10:
         parser.error("Use at least 5s before outage, 2s outage, and 10s for recovery")
+    if args.packet_loss_percent is not None and not 0 < args.packet_loss_percent < 100:
+        parser.error("--packet-loss-percent must be greater than 0 and below 100")
     if subprocess.run(["ffmpeg", "-version"], capture_output=True).returncode:
         parser.error("FFmpeg must be installed and available on PATH")
     image_present = subprocess.run(
@@ -309,6 +437,7 @@ def main() -> int:
         docker("pull", args.srs_image, timeout=180)
 
     container = f"rtmp-m6-client-outage-{uuid.uuid4().hex[:10]}"
+    proxy_network = f"rtmp-m6-net-{uuid.uuid4().hex[:10]}" if args.packet_loss_percent is not None else None
     stream_id = "client-outage"
     with tempfile.TemporaryDirectory(prefix="rtmp-client-outage-smoke-") as temporary:
         root = Path(temporary)
@@ -341,10 +470,12 @@ def main() -> int:
                 raise RuntimeError("temporary loopback collector did not start")
             token = (root / "admin.token").read_text(encoding="utf-8").strip()
 
-            docker(
-                "run", "--detach", "--rm", "--name", container,
-                "--publish", f"127.0.0.1:{srs_port}:1935", args.srs_image,
-            )
+            srs_command = ["run", "--detach", "--rm", "--name", container]
+            if proxy_network:
+                docker("network", "create", proxy_network)
+                srs_command.extend(["--network", proxy_network, "--network-alias", "srs"])
+            srs_command.extend(["--publish", f"127.0.0.1:{srs_port}:1935", args.srs_image])
+            docker(*srs_command)
             wait_for_listener(srs_port, timeout=20)
             api_request(
                 central_url,
@@ -420,10 +551,15 @@ def main() -> int:
                 "log_dir": root / "agent-logs-egress",
             }))
 
-            proxy = ClientRtmpProxy(proxy_port, srs_port)
-            interrupted_at, restored_at, recovered_at, baseline, recovered = asyncio.run(run_fault_window(
+            proxy: ClientRtmpProxy | DockerNetemClientProxy
+            if proxy_network:
+                proxy = DockerNetemClientProxy(proxy_port, proxy_network)
+            else:
+                proxy = ClientRtmpProxy(proxy_port, srs_port)
+            interrupted_at, restored_at, recovered_at, baseline, recovered, dropped_packets = asyncio.run(run_fault_window(
                 configs, proxy, srs_port, central_url, token, stream_id, agent_ids, client_ids,
                 args.outage_after, args.outage_duration, args.recovery_timeout,
+                args.packet_loss_percent,
             ))
 
             query = urlencode({
@@ -484,17 +620,20 @@ def main() -> int:
                     f"location={event.get('probable_location') or 'not localized'}"
                 )
             failures = []
-            if not restart_events:
-                failures.append("the event timeline did not record FFMPEG_RESTART after the client outage")
-            restart_probe_names = {event.get("probe_name") for event in restart_events}
             expected_client_names = {names[agent_id] for agent_id in client_ids}
-            missing_restart_names = expected_client_names - restart_probe_names
-            if missing_restart_names:
-                failures.append(
-                    "the event timeline has no FFMPEG_RESTART for " + ", ".join(sorted(missing_restart_names))
-                )
-            if "NETWORK_PATH_PROBLEM" not in event_codes:
-                failures.append("healthy SERVER_EGRESS and failed client TCP path did not produce NETWORK_PATH_PROBLEM")
+            if args.packet_loss_percent is None:
+                if not restart_events:
+                    failures.append("the event timeline did not record FFMPEG_RESTART after the client outage")
+                restart_probe_names = {event.get("probe_name") for event in restart_events}
+                missing_restart_names = expected_client_names - restart_probe_names
+                if missing_restart_names:
+                    failures.append(
+                        "the event timeline has no FFMPEG_RESTART for " + ", ".join(sorted(missing_restart_names))
+                    )
+                if "NETWORK_PATH_PROBLEM" not in event_codes:
+                    failures.append("healthy SERVER_EGRESS and failed client TCP path did not produce NETWORK_PATH_PROBLEM")
+            elif not dropped_packets:
+                failures.append("the isolated tc netem interface did not report an IP packet drop")
             if len(egress_points) < 2:
                 failures.append("SERVER_EGRESS did not provide at least two measured buckets during the client outage")
             if restored_at <= interrupted_at:
@@ -505,7 +644,13 @@ def main() -> int:
             if failures:
                 print("Smoke assertions failed: " + "; ".join(failures))
                 return 1
-            print("Client-only RTMP outage recorded reconnects and both profiles recovered measured bitrate.")
+            if args.packet_loss_percent is None:
+                print("Client-only RTMP outage recorded reconnects and both profiles recovered measured bitrate.")
+            else:
+                print(
+                    f"tc netem dropped {dropped_packets} IP packets on the client-only path; "
+                    "SERVER_EGRESS stayed measurable and clients published fresh measured media after recovery."
+                )
             return 0
         except Exception:
             try:
@@ -517,6 +662,8 @@ def main() -> int:
             raise
         finally:
             subprocess.run(["docker", "rm", "--force", container], capture_output=True, text=True, timeout=30)
+            if proxy_network:
+                subprocess.run(["docker", "network", "rm", proxy_network], capture_output=True, text=True, timeout=30)
             server.should_exit = True
             server_thread.join(timeout=5)
 
