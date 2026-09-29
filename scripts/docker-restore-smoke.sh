@@ -35,14 +35,23 @@ with socket.socket() as sock:
     print(sock.getsockname()[1])
 PY
 )"
+service_uid="$(id -u)"
+service_gid="$(id -g)"
+case "$(uname -s)" in
+  MINGW*|MSYS*)
+    # Git Bash's synthetic uid/gid do not map to Linux named-volume ownership.
+    service_uid=10001
+    service_gid=10001
+    ;;
+esac
 mkdir -p secrets backups smoke-input/data smoke-input/logs
 : > secrets/openai_api_key
 chmod 600 secrets/openai_api_key
 cat > .env <<EOF
 RTMP_MONITOR_PORT=$port
 RTMP_MONITOR_BIND_HOST=127.0.0.1
-RTMP_MONITOR_UID=10001
-RTMP_MONITOR_GID=10001
+RTMP_MONITOR_UID=$service_uid
+RTMP_MONITOR_GID=$service_gid
 RTMP_MONITOR_LEGACY_DATA_DIR=./smoke-input/data
 RTMP_MONITOR_LEGACY_LOG_DIR=./smoke-input/logs
 EOF
@@ -71,6 +80,8 @@ fi
 echo "Central health endpoint became ready. Checking its SQLite volume as the service user."
 docker compose exec -T central python -c \
   'import sqlite3; db=sqlite3.connect("/data/central.db"); db.execute("BEGIN IMMEDIATE"); db.rollback(); db.close(); print("SQLite volume write check passed.")'
+docker compose exec -T central python -c \
+  'import os; assert os.access("/backups", os.W_OK), "service user cannot write to the backup bind mount"; print("Backup bind mount write check passed.")'
 
 admin_token="$(docker compose exec -T central cat /data/admin.token | tr -d '\r\n')"
 if [[ -z "$admin_token" ]]; then
