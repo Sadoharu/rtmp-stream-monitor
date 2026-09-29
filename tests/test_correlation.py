@@ -25,6 +25,23 @@ def test_source_failure_is_located_at_source():
     assert "SOURCE" in result["probable_location"]
 
 
+def test_ingress_stall_correlated_with_egress_and_client_is_source_or_ingest_failure():
+    ingress = report("SERVER_INGRESS", "ingress", "STREAM_STALLED", broken("STREAM_STALL"))
+    ingress["metrics"].update({
+        "srs_api_available": True,
+        "ingress_quality": "PUBLISHER_COUNTERS_ONLY",
+        "ingress_active": True,
+    })
+    result = diagnose_observations([
+        ingress,
+        report("SERVER_EGRESS", "server", "CRITICAL", broken("KEYFRAME_GAP")),
+        report("CLIENT", "client", "CRITICAL", broken("KEYFRAME_GAP")),
+    ])
+
+    assert result["diagnosis"] == "SOURCE_OR_INGEST_PROBLEM"
+    assert result["affected_agents"] == ["ingress", "server", "client"]
+
+
 def test_server_restream_failure_requires_explicit_media_validated_ingress():
     ingress = report("SERVER_INGRESS", "ingress")
     ingress["metrics"]["ingress_quality"] = "MEDIA_VALIDATED"
