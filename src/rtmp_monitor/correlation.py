@@ -113,14 +113,17 @@ def diagnose_observations(observations: list[dict[str, Any]], media_tolerance_se
     elif bad_egress:
         available_ingress = [item for item in ingress if (item.get("metrics") or {}).get("srs_api_available") is not False]
         clean_ingress_exists = bool(available_ingress) and not any(_is_bad(item) for item in available_ingress)
-        ingress_counters_only = clean_ingress_exists and all(
-            (item.get("metrics") or {}).get("ingress_quality") == "PUBLISHER_COUNTERS_ONLY"
+        ingress_media_validated = clean_ingress_exists and all(
+            (item.get("metrics") or {}).get("ingress_quality") == "MEDIA_VALIDATED"
             for item in available_ingress
         )
         clean_source_exists = bool(sources) and not bad_sources
-        if ingress_counters_only:
+        if clean_ingress_exists and not ingress_media_validated:
             diagnosis = "RTMP_SERVER_RESTREAM_UNCONFIRMED"
-            location = "SRS HTTP API confirms an active publisher and ingress counters, but it does not validate decoded frames or GOPs; SOURCE / INGEST and SERVER EGRESS cannot yet be separated"
+            if all((item.get("metrics") or {}).get("ingress_quality") == "PUBLISHER_COUNTERS_ONLY" for item in available_ingress):
+                location = "SRS HTTP API confirms an active publisher and ingress counters, but it does not validate decoded frames or GOPs; SOURCE / INGEST and SERVER EGRESS cannot yet be separated"
+            else:
+                location = "SERVER_INGRESS has no explicit decoded-media/GOP validation; SOURCE / INGEST and SERVER EGRESS cannot yet be separated"
         elif clean_ingress_exists and (not media["available"] or media["aligned"]):
             diagnosis = "RTMP_SERVER_RESTREAM_PROBLEM"
             location = "RTMP SERVER RESTREAM BETWEEN SERVER_INGRESS AND SERVER_EGRESS"

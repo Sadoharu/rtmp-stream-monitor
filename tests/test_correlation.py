@@ -25,18 +25,33 @@ def test_source_failure_is_located_at_source():
     assert "SOURCE" in result["probable_location"]
 
 
-def test_server_restream_failure_requires_clean_source_point():
+def test_server_restream_failure_requires_explicit_media_validated_ingress():
+    ingress = report("SERVER_INGRESS", "ingress")
+    ingress["metrics"]["ingress_quality"] = "MEDIA_VALIDATED"
     result = diagnose_observations([
-        report("SERVER_INGRESS", "ingress"),
+        ingress,
         report("SERVER_EGRESS", "egress", "CRITICAL", broken("KEYFRAME_GAP")),
         report("CLIENT", "client", "CRITICAL", broken("KEYFRAME_GAP")),
     ])
     assert result["diagnosis"] == "RTMP_SERVER_RESTREAM_PROBLEM"
 
 
-def test_egress_only_failure_is_not_silently_ignored():
+def test_ingress_without_explicit_quality_does_not_confirm_server_restream():
     result = diagnose_observations([
         report("SERVER_INGRESS", "ingress"),
+        report("SERVER_EGRESS", "egress", "CRITICAL", broken("DECODE_ERROR")),
+        report("CLIENT", "client", "CRITICAL", broken("DECODE_ERROR")),
+    ])
+
+    assert result["diagnosis"] == "RTMP_SERVER_RESTREAM_UNCONFIRMED"
+    assert "no explicit decoded-media/GOP validation" in result["probable_location"]
+
+
+def test_egress_only_failure_is_not_silently_ignored():
+    ingress = report("SERVER_INGRESS", "ingress")
+    ingress["metrics"]["ingress_quality"] = "MEDIA_VALIDATED"
+    result = diagnose_observations([
+        ingress,
         report("SERVER_EGRESS", "egress", "CRITICAL", broken("DECODE_ERROR")),
         report("CLIENT", "client"),
     ])
