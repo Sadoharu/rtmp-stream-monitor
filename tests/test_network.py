@@ -106,3 +106,26 @@ def test_linux_ping_reports_substantial_partial_loss(monkeypatch):
     assert result["icmp_reply_count"] == 1
     assert result["icmp_status"] == "PARTIAL"
     assert calls[0][2]["LC_ALL"] == "C"
+
+
+def test_linux_tcp_retransmissions_are_interval_deltas(monkeypatch):
+    outputs = iter([
+        "ESTAB 0 0 10.0.0.2:50000 10.0.0.1:1935 cubic rtt:8/1 retrans:0/4",
+        "ESTAB 0 0 10.0.0.2:50000 10.0.0.1:1935 cubic rtt:8/1 retrans:0/4",
+        "ESTAB 0 0 10.0.0.2:50000 10.0.0.1:1935 cubic rtt:8/1 retrans:0/7",
+        "ESTAB 0 0 10.0.0.2:51000 10.0.0.1:1935 cubic rtt:8/1 retrans:0/2",
+        "ESTAB 0 0 10.0.0.2:51000 10.0.0.1:1935 cubic rtt:8/1 retrans:0/3",
+    ])
+    monkeypatch.setattr(network, "_run", lambda *_args, **_kwargs: next(outputs))
+    telemetry = NetworkTelemetry("10.0.0.1", 1935)
+
+    first, same, increased, reconnected, after_reconnect = [telemetry._linux_socket_stats() for _ in range(5)]
+
+    assert first["tcp_retransmissions"] is None
+    assert first["tcp_retransmissions_total"] == 4
+    assert same["tcp_retransmissions"] == 0
+    assert increased["tcp_retransmissions"] == 3
+    assert increased["tcp_retransmissions_total"] == 7
+    assert reconnected["tcp_retransmissions"] is None
+    assert reconnected["tcp_retransmissions_total"] == 2
+    assert after_reconnect["tcp_retransmissions"] == 1

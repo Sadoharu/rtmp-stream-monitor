@@ -118,6 +118,31 @@ def test_substantial_partial_icmp_loss_supports_network_fault():
     assert result["diagnosis"] == "NETWORK_PATH_PROBLEM"
 
 
+def test_stale_linux_network_sample_does_not_blame_current_client_fault():
+    result = diagnose_observations([
+        report("SERVER_EGRESS", "egress"),
+        report("CLIENT", "client", "CRITICAL", broken("FREEZE_START"), {
+            "provider": "linux", "tcp_retransmissions": 4, "tcp_retransmissions_total": 12,
+            "rtt_ms": 182, "packet_loss_percent": 66.7,
+            "sample_age_seconds": 21, "sample_interval_seconds": 10,
+        }),
+    ])
+
+    assert result["diagnosis"] == "CLIENT_PROBLEM"
+
+
+def test_stale_windows_retransmits_do_not_even_mark_path_unconfirmed():
+    result = diagnose_observations([
+        report("SERVER_EGRESS", "egress"),
+        report("CLIENT", "client", "CRITICAL", broken("FREEZE_START"), {
+            "provider": "windows", "tcp_retransmissions": 1,
+            "sample_age_seconds": 31, "sample_interval_seconds": 10,
+        }),
+    ])
+
+    assert result["diagnosis"] == "CLIENT_PROBLEM"
+
+
 def test_no_icmp_replies_alone_do_not_prove_network_fault():
     result = diagnose_observations([
         report("SERVER_EGRESS", "egress"),

@@ -25,6 +25,7 @@ class NetworkTelemetry:
         self.system_retransmits: int | None = None
         self.last_sample_mono: float | None = None
         self.previous_system_retransmits: int | None = None
+        self.previous_linux_flow_retransmits: int | None = None
 
     def sample(self) -> dict[str, Any]:
         now = time.monotonic()
@@ -110,11 +111,40 @@ class NetworkTelemetry:
     def _linux_socket_stats(self) -> dict[str, Any]:
         output = _run(["ss", "-tin", "dst", self.host, "dport", "=", f":{self.port}"], timeout=2)
         if not output:
-            return {"tcp_retransmissions": None, "tcp_state": "unknown", "provider_note": "ss unavailable or no matching flow"}
+            self.previous_linux_flow_retransmits = None
+            return {
+                "tcp_retransmissions": None,
+                "tcp_retransmissions_total": None,
+                "tcp_state": "unknown",
+                "provider_note": "ss unavailable or no matching flow",
+            }
         rtt = re.search(r"\brtt:([\d.]+)/", output)
-        retrans = re.search(r"\bretrans:(\d+)/(\d+)", output)
         state = "ESTABLISHED" if "ESTAB" in output else "not-established"
-        return {"rtt_ms": float(rtt.group(1)) if rtt else None, "tcp_retransmissions": int(retrans.group(2)) if retrans else None, "tcp_state": state, "provider_note": "per-flow TCP_INFO via ss"}
+        retrans_totals = [int(total) for _, total in re.findall(r"\bretrans:(\d+)/(\d+)", output)]
+        # ss prints retrans:<currently-unacked>/<total-for-the-entire-connection>.
+        # Diagnose with the interval delta so an old retransmit cannot make a
+        # later client-side decoder fault look like a current network problem.
+        if retrans_totals:
+            current_total = sum(retrans_totals)
+        elif state == "ESTABLISHED":
+            current_total = 0
+        else:
+            current_total = None
+        retrans_delta = None
+        if current_total is not None:
+            previous_total = self.previous_linux_flow_retransmits
+            if previous_total is not None and current_total >= previous_total:
+                retrans_delta = current_total - previous_total
+            self.previous_linux_flow_retransmits = current_total
+        else:
+            self.previous_linux_flow_retransmits = None
+        return {
+            "rtt_ms": float(rtt.group(1)) if rtt else None,
+            "tcp_retransmissions": retrans_delta,
+            "tcp_retransmissions_total": current_total,
+            "tcp_state": state,
+            "provider_note": "per-flow TCP_INFO via ss; retransmissions are interval deltas",
+        }
 
     def _windows_tcp_stats(self, now: float) -> dict[str, Any]:
         script = "$s=Get-NetTCPStatistics -ErrorAction Stop; [pscustomobject]@{retrans=[int64]$s.SegmentsRetransmitted}|ConvertTo-Json -Compress"

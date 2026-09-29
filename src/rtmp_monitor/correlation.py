@@ -19,6 +19,15 @@ BAD_EVENT_CODES = {
 NETWORK_EVENT_CODES = {"TCP_RETRANSMISSION", "TCP_RESET", "PACKET_LOSS", "RTT_SPIKE", "CONNECTION_RESET"}
 
 
+def _network_sample_is_stale(network: dict[str, Any]) -> bool:
+    sample_age = network.get("sample_age_seconds")
+    if not isinstance(sample_age, (int, float)):
+        return False
+    sample_interval = network.get("sample_interval_seconds")
+    max_age = max(float(sample_interval) * 2, 15.0) if isinstance(sample_interval, (int, float)) else 30.0
+    return sample_age > max_age
+
+
 def _errors(observation: dict[str, Any]) -> list[dict[str, Any]]:
     events = observation.get("events") or []
     return [event for event in events if event.get("code") in BAD_EVENT_CODES]
@@ -44,6 +53,8 @@ def _network_is_bad(observation: dict[str, Any]) -> bool:
     network = metrics.get("network") or {}
     if any(event.get("code") in NETWORK_EVENT_CODES for event in observation.get("events") or []):
         return True
+    if _network_sample_is_stale(network):
+        return False
     retransmits = network.get("tcp_retransmissions")
     tcp_state = str(network.get("tcp_state", "")).upper()
     tcp_state_is_bad = bool(tcp_state and tcp_state not in {"ESTABLISHED", "ESTAB", "UNKNOWN"})
@@ -80,7 +91,12 @@ def _network_is_bad(observation: dict[str, Any]) -> bool:
 def _has_unattributed_windows_retransmits(observation: dict[str, Any]) -> bool:
     network = (observation.get("metrics") or {}).get("network") or {}
     retransmits = network.get("tcp_retransmissions")
-    return network.get("provider") == "windows" and isinstance(retransmits, (int, float)) and retransmits > 0
+    return (
+        not _network_sample_is_stale(network)
+        and network.get("provider") == "windows"
+        and isinstance(retransmits, (int, float))
+        and retransmits > 0
+    )
 
 
 def diagnose_observations(observations: list[dict[str, Any]], media_tolerance_seconds: float = 5.0) -> dict[str, Any] | None:
