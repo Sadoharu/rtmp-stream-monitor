@@ -10,6 +10,84 @@ permissions:
   contents: read
 
 jobs:
+  ubuntu-agent-package:
+    name: Ubuntu 22.04 agent package
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.10"
+      - name: Build self-contained Python wheelhouse package
+        run: bash scripts/build-agent-deb.sh "$RUNNER_TEMP/agent-deb"
+      - name: Inspect Debian package metadata
+        run: |
+          dpkg-deb --info "$RUNNER_TEMP"/agent-deb/*.deb
+          (cd "$RUNNER_TEMP/agent-deb" && sha256sum --check *.deb.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-22.04-agent-package
+          path: ${{ runner.temp }}/agent-deb/*
+          if-no-files-found: error
+
+  windows-agent-package:
+    name: Build bundled Windows agent package
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Build Windows bundle with private Python runtime
+        shell: powershell
+        run: .\scripts\build-windows-agent.ps1 -OutputDirectory "$env:RUNNER_TEMP\windows-agent"
+      - name: Verify package checksum
+        shell: powershell
+        run: |
+          $expected = ((Get-Content -Raw "$env:RUNNER_TEMP\windows-agent\rtmp-monitor-agent-windows.zip.sha256").Trim() -split '\s+')[0].ToLowerInvariant()
+          $actual = (Get-FileHash -Algorithm SHA256 "$env:RUNNER_TEMP\windows-agent\rtmp-monitor-agent-windows.zip").Hash.ToLowerInvariant()
+          if ($expected -notmatch '^[0-9a-f]{64}$' -or $actual -ne $expected) { throw 'Windows package checksum validation failed.' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-agent-package
+          path: ${{ runner.temp }}/windows-agent/*
+          if-no-files-found: error
+
+  windows-bundled-installer:
+    name: Windows bundled service install / uninstall
+    runs-on: windows-latest
+    needs: windows-agent-package
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-agent-package
+          path: ${{ runner.temp }}/windows-agent
+      - name: Run bundled installer without system Python
+        shell: powershell
+        run: .\tests\smoke_windows_installer.ps1 -BundlePath "$env:RUNNER_TEMP\windows-agent\rtmp-monitor-agent-windows.zip"
+
+  frontend:
+    name: Dashboard frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Typecheck and build dashboard
+        working-directory: frontend
+        run: |
+          npm run typecheck
+          npm run build
+      - name: Verify packaged dashboard assets are current
+        run: git diff --exit-code -- src/rtmp_monitor/static
+
   windows-installer:
     name: Windows production installer / Python ${{ matrix.python-version }}
     runs-on: windows-latest
@@ -33,6 +111,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - os: ubuntu-latest
+            python-version: "3.10"
           - os: ubuntu-latest
             python-version: "3.12"
           - os: windows-latest

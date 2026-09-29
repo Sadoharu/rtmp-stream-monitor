@@ -5,11 +5,8 @@ MODE="${1:-server}"
 case "$MODE" in
   server) exec bash "$ROOT/install-server.sh" ;;
   agent)
-    if [[ $# -lt 2 ]]; then
-      echo "Usage: sudo ./install.sh agent /path/to/agent.yaml" >&2
-      exit 2
-    fi
-    exec bash "$ROOT/install-agent.sh" "$2"
+    shift
+    exec bash "$ROOT/install-agent.sh" "$@"
     ;;
-  *) echo "Usage: sudo ./install.sh [server | agent /path/to/agent.yaml]" >&2; exit 2 ;;
+  *) echo "Usage: sudo ./install.sh [server | agent --server https://monitor.example.net | agent --config /path/to/agent.yaml]" >&2; exit 2 ;;
 esac

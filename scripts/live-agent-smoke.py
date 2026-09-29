@@ -12,8 +12,9 @@ import threading
 import time
 import urllib.request
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 import uvicorn
 
@@ -85,12 +86,19 @@ def main() -> int:
                 },
                 "state_dir": root / "agent-data", "log_dir": root / "agent-logs",
             })
+            observed_from = datetime.now(timezone.utc) - timedelta(seconds=args.seconds + 10)
             asyncio.run(run_probe(agent_config, args.seconds))
             data = request(central_url, "/api/v1/dashboard", admin)
             found = next(item for item in data["agents"] if item["name"] == "live-smoke-agent")
             metrics = found["metrics"]
             print(f"Agent status: {found['status']}")
             print(f"Video codec/resolution: {metrics.get('video_codec')} / {metrics.get('resolution')}")
+            print(
+                "Measured received-media bitrate: "
+                f"{metrics.get('received_media_bitrate_bps')} bps; "
+                f"quality={metrics.get('received_media_bitrate_quality')}; "
+                f"window={metrics.get('measurement_window_seconds')} s"
+            )
             print(f"Input FPS (reported) / FFmpeg processing FPS: {metrics.get('source_fps')} / {metrics.get('decode_fps')}")
             print(f"Video frames or packets/keyframes: {metrics.get('frames') if args.profile == 'DEEP' else metrics.get('packets')} / {metrics.get('keyframes')}")
             print(f"PTS regressions/jumps: {metrics.get('pts_regressions')} / {metrics.get('pts_jumps')}")
@@ -136,6 +144,23 @@ def main() -> int:
             media_count = metrics.get("frames") if args.profile == "DEEP" else metrics.get("packets")
             if not media_count or not metrics.get("keyframes") or metrics.get("video_codec") != "h264":
                 print("Expected H.264 frames and keyframes did not reach the collector")
+                return 1
+            if metrics.get("received_media_bitrate_quality") != "MEASURED" or not isinstance(metrics.get("received_media_bitrate_bps"), (int, float)):
+                print("A measured received-media bitrate did not reach the collector")
+                return 1
+            observed_to = datetime.now(timezone.utc)
+            query = urlencode({"from": observed_from.isoformat(), "to": observed_to.isoformat(), "resolution": "1s"})
+            series_data = request(central_url, f"/api/v2/streams/{stream_id}/series?{query}", admin)
+            events_data = request(central_url, f"/api/v2/streams/{stream_id}/events?{query}", admin)
+            probe_series = next((row for row in series_data["series"] if row["probe"]["id"] == agent["id"]), None)
+            measured_points = [point for point in (probe_series or {}).get("points", []) if point.get("sample_count", 0) > 0]
+            print(
+                f"Series API: {len(measured_points)} measured bucket(s), "
+                f"resolution={series_data['actual_resolution_seconds']} s, "
+                f"events={len(events_data['events'])}"
+            )
+            if not measured_points or not any(point.get("avg_bps", 0) > 0 for point in measured_points):
+                print("The V2 series API did not return the live probe's measured bitrate")
                 return 1
             return 0
         finally:

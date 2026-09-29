@@ -7,22 +7,25 @@ import logging
 import os
 import secrets
 import uuid
+from bisect import bisect_left, bisect_right
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from math import ceil
+from math import ceil, isfinite
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, Field
-from sqlalchemy import Float, case, cast, func, or_, select, union
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import Float, case, cast, func, or_, select, union, update
 from sqlalchemy.orm import Session
 
 from . import __version__
 from .config import CentralFileConfig
 from .correlation import correlate_stream, mark_offline_agents, run_retention
-from .db import Agent, Base, Incident, Stream, Telemetry, make_engine, make_session_factory, utcnow
+from .db import Agent, Base, Incident, MetricAggregate, ProbeEnrollment, Stream, Telemetry, make_engine, make_session_factory, utcnow
 from .explanations import build_evidence_packet, deterministic_explanation, openai_explanation
 
 LOG = logging.getLogger("rtmp_monitor.api")
@@ -42,6 +45,32 @@ class AgentCreate(BaseModel):
     platform: str = Field(default="unknown", max_length=64)
     role: str = Field(pattern=r"^(SERVER_INGRESS|SERVER_EGRESS|CLIENT|SOURCE)$")
     stream_id: str
+
+
+class EnrollmentCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    location: str = Field(default="unknown", max_length=256)
+    platform: str = Field(default="unknown", max_length=64)
+    role: str = Field(pattern=r"^(SERVER_INGRESS|SERVER_EGRESS|CLIENT|SOURCE)$")
+    stream_id: str
+    central_url: str = Field(min_length=1, max_length=2048)
+    profile: str = Field(default="DEEP", pattern=r"^(LIGHT|DEEP)$")
+
+    @field_validator("central_url")
+    @classmethod
+    def validate_central_url(cls, value: str) -> str:
+        parsed = urlsplit(value.strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("central_url must be an http(s) origin")
+        if parsed.username or parsed.password or parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+            raise ValueError("central_url must be an origin without credentials, path, query or fragment")
+        if parsed.scheme != "https" and parsed.hostname.lower() not in {"localhost", "127.0.0.1", "::1"}:
+            raise ValueError("central_url must use HTTPS for remote probes")
+        return f"{parsed.scheme}://{parsed.netloc}"
+
+
+class EnrollmentRedeem(BaseModel):
+    code: str = Field(min_length=24, max_length=128)
 
 
 class TelemetryItem(BaseModel):
@@ -78,6 +107,18 @@ def _read_or_create_admin_token(path: Path) -> str:
         pass
     LOG.warning("Created dashboard admin token. Read it locally from %s and keep it private.", path.resolve())
     return token
+
+
+def _openai_api_key() -> str:
+    secret_file = os.getenv("OPENAI_API_KEY_FILE", "").strip()
+    if secret_file:
+        try:
+            value = Path(secret_file).read_text(encoding="utf-8").strip()
+            if value:
+                return value
+        except OSError:
+            LOG.warning("Could not read the configured OpenAI API key file")
+    return os.getenv("OPENAI_API_KEY", "").strip()
 
 
 def _datetime(value: datetime | None) -> datetime | None:
@@ -170,10 +211,12 @@ def create_app(config: CentralFileConfig | None = None, database_url: str | None
         engine.dispose()
 
     app = FastAPI(title="RTMP Stream Monitor", version=__version__, lifespan=lifespan)
+    static_dir = Path(__file__).parent / "static"
+    app.mount("/assets", StaticFiles(directory=static_dir / "assets", check_dir=False), name="dashboard-assets")
     app.state.sessions = sessions
     app.state.admin_token = admin_token
     app.state.central_config = config
-    app.state.openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    app.state.openai_api_key = _openai_api_key()
     app.state.openai_model = os.getenv("OPENAI_MODEL", "gpt-6-luna").strip() or "gpt-6-luna"
 
     def get_session():
@@ -201,7 +244,7 @@ def create_app(config: CentralFileConfig | None = None, database_url: str | None
 
     @app.get("/", include_in_schema=False)
     def dashboard():
-        return FileResponse(Path(__file__).parent / "static" / "index.html")
+        return FileResponse(static_dir / "index.html")
 
     @app.get("/api/v1/auth/check")
     def auth_check(_admin: bool = Depends(require_admin)):
@@ -251,6 +294,93 @@ def create_app(config: CentralFileConfig | None = None, database_url: str | None
         session.add(agent)
         session.commit()
         return {"id": agent.id, "name": agent.name, "token": token, "role": agent.role, "stream_id": agent.stream_id}
+
+    @app.post("/api/v2/probe-enrollments", status_code=201)
+    def create_probe_enrollment(data: EnrollmentCreate, _admin: bool = Depends(require_admin), session: Session = Depends(get_session)):
+        stream = session.get(Stream, data.stream_id)
+        if not stream:
+            raise HTTPException(status_code=404, detail="Stream not found")
+        if data.role == "SERVER_INGRESS":
+            raise HTTPException(status_code=422, detail="SERVER_INGRESS needs SRS API settings; use the existing manual configuration flow")
+        stream_url = {
+            "CLIENT": stream.public_url,
+            "SERVER_EGRESS": stream.local_url,
+            "SOURCE": stream.source_url,
+        }[data.role]
+        if not stream_url:
+            raise HTTPException(status_code=422, detail=f"Stream has no URL configured for probe role {data.role}")
+
+        now = utcnow()
+        existing = session.scalar(select(Agent).where(Agent.name == data.name))
+        if existing and existing.enabled and existing.last_seen_at is not None:
+            raise HTTPException(status_code=409, detail="Probe name already exists")
+        if existing:
+            agent = existing
+            agent.location = data.location
+            agent.platform = data.platform
+            agent.role = data.role
+            agent.stream_id = data.stream_id
+            agent.token_hash = _token_hash(secrets.token_urlsafe(36))
+            agent.enabled = True
+        else:
+            agent = Agent(
+                id=str(uuid.uuid4()), name=data.name, location=data.location, platform=data.platform,
+                role=data.role, stream_id=data.stream_id, token_hash=_token_hash(secrets.token_urlsafe(36)),
+            )
+            session.add(agent)
+        session.flush()
+
+        # Only one outstanding code may provision a given probe. This avoids a later
+        # redemption unexpectedly rotating the token of an already-installed probe.
+        for pending in session.scalars(select(ProbeEnrollment).where(
+            ProbeEnrollment.agent_id == agent.id,
+            ProbeEnrollment.redeemed_at.is_(None),
+            ProbeEnrollment.expires_at > now,
+        )).all():
+            pending.expires_at = now
+        code = secrets.token_urlsafe(24)
+        enrollment = ProbeEnrollment(
+            id=str(uuid.uuid4()), agent_id=agent.id, code_hash=_token_hash(code),
+            central_url=data.central_url, stream_url=stream_url, profile=data.profile,
+            created_at=now, expires_at=now + timedelta(minutes=15),
+        )
+        session.add(enrollment)
+        session.commit()
+        return {"agent_id": agent.id, "name": agent.name, "code": code, "expires_at": enrollment.expires_at.isoformat(), "expires_in_seconds": 900}
+
+    @app.post("/api/v2/probe-enrollments/redeem")
+    def redeem_probe_enrollment(data: EnrollmentRedeem, session: Session = Depends(get_session)):
+        enrollment = session.scalar(select(ProbeEnrollment).where(ProbeEnrollment.code_hash == _token_hash(data.code)))
+        now = utcnow()
+        if not enrollment or enrollment.redeemed_at is not None or _datetime(enrollment.expires_at) <= now:
+            raise HTTPException(status_code=400, detail="Enrollment code is invalid, expired or already used")
+        agent = session.get(Agent, enrollment.agent_id)
+        if not agent or not agent.enabled:
+            raise HTTPException(status_code=400, detail="Enrollment code is invalid, expired or already used")
+
+        # The conditional update makes redemption single-use even when two installers
+        # submit the same code at nearly the same time.
+        consumed = session.execute(update(ProbeEnrollment).where(
+            ProbeEnrollment.id == enrollment.id,
+            ProbeEnrollment.redeemed_at.is_(None),
+            ProbeEnrollment.expires_at > now,
+        ).values(redeemed_at=now).execution_options(synchronize_session=False))
+        if consumed.rowcount != 1:
+            session.rollback()
+            raise HTTPException(status_code=400, detail="Enrollment code is invalid, expired or already used")
+
+        token = secrets.token_urlsafe(36)
+        agent.token_hash = _token_hash(token)
+        config_data = {
+            "server": {"url": enrollment.central_url},
+            "agent": {
+                "id": agent.id, "name": agent.name, "location": agent.location,
+                "role": agent.role, "token": token, "profile": enrollment.profile,
+            },
+            "streams": [{"id": agent.stream_id, "url": enrollment.stream_url, "role": agent.role}],
+        }
+        session.commit()
+        return {"agent_id": agent.id, "config": config_data}
 
     @app.post("/api/v1/agents/{agent_id}/rotate-token")
     def rotate_agent_token(agent_id: str, _admin: bool = Depends(require_admin), session: Session = Depends(get_session)):
@@ -501,6 +631,330 @@ def create_app(config: CentralFileConfig | None = None, database_url: str | None
             for item, agent in rows
         ]
 
+    @app.get("/api/v2/streams/{stream_id}/series")
+    def stream_series(
+        stream_id: str,
+        from_: datetime = Query(alias="from"),
+        to: datetime = Query(),
+        resolution: str = Query(default="1s", pattern=r"^(1s|5s|10s|1m|5m|1h)$"),
+        probe_ids: list[str] | None = Query(default=None),
+        _admin: bool = Depends(require_admin),
+        session: Session = Depends(get_session),
+    ):
+        stream = session.get(Stream, stream_id)
+        if not stream:
+            raise HTTPException(status_code=404, detail="Stream not found")
+        start, end = _datetime(from_), _datetime(to)
+        assert start is not None and end is not None
+        if end <= start:
+            raise HTTPException(status_code=422, detail="'from' must be earlier than 'to'")
+        duration = (end - start).total_seconds()
+        if duration > 90 * 86400:
+            raise HTTPException(status_code=422, detail="Series range cannot exceed 90 days")
+        requested_seconds = {"1s": 1, "5s": 5, "10s": 10, "1m": 60, "5m": 300, "1h": 3600}[resolution]
+        bucket_seconds = max(requested_seconds, ceil(duration / 9998))
+
+        agents_query = select(Agent).where(Agent.stream_id == stream_id).order_by(Agent.name)
+        if probe_ids:
+            agents_query = agents_query.where(Agent.id.in_(probe_ids))
+        agents = session.scalars(agents_query).all()
+        if probe_ids and len(agents) != len(set(probe_ids)):
+            raise HTTPException(status_code=404, detail="One or more probes were not found for this stream")
+        by_id = {agent.id: agent for agent in agents}
+        if not agents:
+            return {
+                "stream_id": stream_id, "from": start.isoformat(), "to": end.isoformat(),
+                "actual_resolution_seconds": bucket_seconds, "generated_at": utcnow().isoformat(), "series": [],
+            }
+
+        dialect = session.get_bind().dialect.name
+        if dialect == "sqlite":
+            def epoch(column):
+                return cast(func.strftime("%s", column), Float)
+            def json_value(column, path: str):
+                return func.json_extract(column, path)
+        elif dialect == "postgresql":
+            def epoch(column):
+                return func.extract("epoch", column)
+            def json_value(column, path: str):
+                keys = path.removeprefix("$.").split(".")
+                value = column
+                for key in keys:
+                    value = value[key]
+                return value.as_string()
+        else:
+            raise HTTPException(status_code=501, detail=f"Series sampling is not supported for database dialect {dialect}")
+
+        bitrate_json = json_value(Telemetry.metrics, "$.received_media_bitrate_bps")
+        bitrate = cast(bitrate_json, Float)
+        quality = json_value(Telemetry.metrics, "$.received_media_bitrate_quality")
+        window = cast(json_value(Telemetry.metrics, "$.measurement_window_seconds"), Float)
+        bucket_number = func.floor(epoch(Telemetry.observed_at) / bucket_seconds)
+        retention_cutoff = utcnow() - timedelta(days=config.raw_retention_days)
+        # Retention moves complete minute buckets; use the same UTC boundary so
+        # series queries do not create a hole between raw and rolled-up data.
+        raw_limit = datetime.fromtimestamp(int(retention_cutoff.timestamp() // 60 * 60), timezone.utc)
+        accumulators: dict[str, dict[int, dict[str, Any]]] = {agent.id: {} for agent in agents}
+        gap_hints: dict[str, dict[int, str]] = {agent.id: {} for agent in agents}
+
+        raw_start = max(start, raw_limit)
+        if raw_start < end:
+            raw_conditions = (
+                Telemetry.stream_id == stream_id,
+                Telemetry.agent_id.in_(by_id),
+                Telemetry.observed_at >= raw_start,
+                Telemetry.observed_at < end,
+            )
+            measured_at = func.max(case((bitrate.is_not(None), Telemetry.observed_at)))
+            raw_rows = session.execute(
+                select(
+                    Telemetry.agent_id,
+                    bucket_number.label("bucket_number"),
+                    func.min(bitrate).label("min_bps"),
+                    func.avg(bitrate).label("avg_bps"),
+                    func.max(bitrate).label("max_bps"),
+                    func.count(bitrate).label("sample_count"),
+                    func.count(Telemetry.id).label("row_count"),
+                    func.avg(window).label("window_avg"),
+                    measured_at.label("last_observed_at"),
+                    func.sum(case((quality == "MEASUREMENT_WARMUP", 1), else_=0)).label("warmup_count"),
+                    func.sum(case((quality == "MEASUREMENT_UNAVAILABLE", 1), else_=0)).label("unavailable_count"),
+                ).where(*raw_conditions).group_by(Telemetry.agent_id, bucket_number)
+            ).all()
+            for row in raw_rows:
+                index = int(row.bucket_number)
+                if row.sample_count:
+                    accumulators[row.agent_id][index] = {
+                        "min_bps": float(row.min_bps), "avg_bps": float(row.avg_bps), "max_bps": float(row.max_bps),
+                        "sample_count": int(row.sample_count), "expected_count": max(1, ceil(bucket_seconds)),
+                        "window_avg": float(row.window_avg or 1.0),
+                        "last_observed_at": _datetime(row.last_observed_at),
+                    }
+                elif row.row_count:
+                    gap_hints[row.agent_id][index] = "MEASUREMENT_WARMUP" if row.warmup_count else "MEASUREMENT_UNAVAILABLE"
+
+        aggregate_end = min(end, raw_start)
+        if start < aggregate_end:
+            aggregate_epoch = epoch(MetricAggregate.bucket_start)
+            aggregate_bucket = func.floor(aggregate_epoch / bucket_seconds)
+            value_path = "$.received_media_bitrate_bps"
+            aggregate_min = cast(json_value(MetricAggregate.metrics, f"{value_path}.min"), Float)
+            aggregate_avg = cast(json_value(MetricAggregate.metrics, f"{value_path}.avg"), Float)
+            aggregate_max = cast(json_value(MetricAggregate.metrics, f"{value_path}.max"), Float)
+            aggregate_count = cast(json_value(MetricAggregate.metrics, f"{value_path}.count"), Float)
+            aggregate_window = cast(json_value(MetricAggregate.metrics, "$.measurement_window_seconds.avg"), Float)
+            aggregate_last = json_value(MetricAggregate.metrics, f"{value_path}.last_observed_at")
+            agg_rows = session.execute(
+                select(
+                    MetricAggregate.agent_id,
+                    aggregate_bucket.label("bucket_number"),
+                    func.min(aggregate_min).label("min_bps"),
+                    (func.sum(aggregate_avg * aggregate_count) / func.sum(aggregate_count)).label("avg_bps"),
+                    func.max(aggregate_max).label("max_bps"),
+                    func.sum(aggregate_count).label("sample_count"),
+                    (func.sum(aggregate_window * aggregate_count) / func.sum(aggregate_count)).label("window_avg"),
+                    func.max(aggregate_last).label("last_observed_at"),
+                ).where(
+                    MetricAggregate.stream_id == stream_id,
+                    MetricAggregate.agent_id.in_(by_id),
+                    MetricAggregate.bucket_start >= start,
+                    MetricAggregate.bucket_start < aggregate_end,
+                    aggregate_count.is_not(None),
+                    aggregate_count > 0,
+                ).group_by(MetricAggregate.agent_id, aggregate_bucket)
+            ).all()
+            for row in agg_rows:
+                index = int(row.bucket_number)
+                count = int(row.sample_count)
+                accumulators[row.agent_id][index] = {
+                    "min_bps": float(row.min_bps), "avg_bps": float(row.avg_bps), "max_bps": float(row.max_bps),
+                    "sample_count": count, "expected_count": max(1, ceil(bucket_seconds)),
+                    "window_avg": float(row.window_avg or 1.0),
+                    "last_observed_at": _parse_iso_datetime(row.last_observed_at),
+                }
+
+        response_series = []
+        first_bucket = int(start.timestamp() // bucket_seconds)
+        last_bucket_exclusive = ceil(end.timestamp() / bucket_seconds)
+        expected_buckets = range(first_bucket, last_bucket_exclusive)
+        for agent in agents:
+            latest = session.scalar(
+                select(Telemetry).where(Telemetry.agent_id == agent.id)
+                .order_by(Telemetry.observed_at.desc()).limit(1)
+            )
+            latest_metrics = latest.metrics if latest else {}
+            sample_interval = float(latest_metrics.get("sample_interval_seconds", 1.0) or 1.0)
+            points = []
+            gaps = []
+            open_gap: dict[str, Any] | None = None
+            point_buckets = accumulators[agent.id]
+            for index in expected_buckets:
+                bucket_start = datetime.fromtimestamp(index * bucket_seconds, timezone.utc)
+                bucket_end = bucket_start + timedelta(seconds=bucket_seconds)
+                if bucket_end <= start or bucket_start >= end:
+                    continue
+                expected_count = max(1, ceil((min(bucket_end, end) - max(bucket_start, start)).total_seconds() / sample_interval))
+                point = point_buckets.get(index)
+                if point:
+                    points.append({
+                        "timestamp": bucket_start.isoformat(), "bucket_seconds": bucket_seconds,
+                        "min_bps": round(point["min_bps"]), "avg_bps": round(point["avg_bps"]),
+                        "max_bps": round(point["max_bps"]), "sample_count": point["sample_count"],
+                        "expected_count": expected_count,
+                        "quality": "MEASURED" if point["sample_count"] >= expected_count else "PARTIAL",
+                        "measurement_window_seconds_avg": round(point["window_avg"], 3),
+                        "last_observed_at": point["last_observed_at"].isoformat() if point["last_observed_at"] else bucket_start.isoformat(),
+                    })
+                    reason = None
+                else:
+                    reason = gap_hints[agent.id].get(index)
+                    last_seen = _datetime(agent.last_seen_at)
+                    if reason is None and last_seen and bucket_end > last_seen + timedelta(seconds=config.agent_offline_seconds):
+                        reason = "PROBE_OFFLINE"
+                    reason = reason or "NO_SAMPLE"
+                if reason is None:
+                    if open_gap:
+                        gaps.append(open_gap)
+                        open_gap = None
+                    continue
+                if open_gap and open_gap["reason"] == reason and open_gap["to"] == bucket_start.isoformat():
+                    open_gap["to"] = min(bucket_end, end).isoformat()
+                else:
+                    if open_gap:
+                        gaps.append(open_gap)
+                    open_gap = {"from": max(bucket_start, start).isoformat(), "to": min(bucket_end, end).isoformat(), "reason": reason}
+            if open_gap:
+                gaps.append(open_gap)
+            response_series.append({
+                "probe": {"id": agent.id, "name": agent.name, "role": agent.role, "profile": latest_metrics.get("profile", "unknown"), "platform": agent.platform},
+                "metric": "received_media_bitrate_bps", "unit": "bps", "points": points, "gaps": gaps,
+            })
+
+        return {
+            "stream_id": stream_id, "from": start.isoformat(), "to": end.isoformat(),
+            "actual_resolution_seconds": bucket_seconds, "generated_at": utcnow().isoformat(), "series": response_series,
+        }
+
+    @app.get("/api/v2/streams/{stream_id}/events")
+    def stream_events(
+        stream_id: str,
+        from_: datetime = Query(alias="from"),
+        to: datetime = Query(),
+        probe_ids: list[str] | None = Query(default=None),
+        severity: str | None = Query(default=None, pattern=r"^(INFO|WARNING|CRITICAL)$"),
+        _admin: bool = Depends(require_admin),
+        session: Session = Depends(get_session),
+    ):
+        if not session.get(Stream, stream_id):
+            raise HTTPException(status_code=404, detail="Stream not found")
+        start, end = _datetime(from_), _datetime(to)
+        assert start is not None and end is not None
+        if end <= start:
+            raise HTTPException(status_code=422, detail="'from' must be earlier than 'to'")
+        if (end - start).total_seconds() > 90 * 86400:
+            raise HTTPException(status_code=422, detail="Events range cannot exceed 90 days")
+        agents_query = select(Agent).where(Agent.stream_id == stream_id)
+        if probe_ids:
+            agents_query = agents_query.where(Agent.id.in_(probe_ids))
+        agents = session.scalars(agents_query).all()
+        agent_by_id = {agent.id: agent for agent in agents}
+        if probe_ids and len(agents) != len(set(probe_ids)):
+            raise HTTPException(status_code=404, detail="One or more probes were not found for this stream")
+        events: list[dict[str, Any]] = []
+        if agents:
+            rows = session.execute(
+                select(Telemetry, Agent).join(Agent, Telemetry.agent_id == Agent.id)
+                .where(
+                    Telemetry.stream_id == stream_id, Telemetry.agent_id.in_(agent_by_id),
+                    Telemetry.observed_at >= start, Telemetry.observed_at < end,
+                    func.json_array_length(Telemetry.events) > 0,
+                ).order_by(Telemetry.observed_at.asc()).limit(10000)
+            ).all()
+            for item, agent in rows:
+                for event in item.events or []:
+                    code = str(event.get("code", "PROBE_EVENT"))
+                    event_severity = str(event.get("severity", "INFO")).upper()
+                    if severity and event_severity != severity:
+                        continue
+                    details = event.get("details") if isinstance(event.get("details"), dict) else {}
+                    occurred_at = _parse_iso_datetime(event.get("timestamp")) or _datetime(item.observed_at)
+                    safe_details = _safe_event_details(details)
+                    evidence = _probe_event_evidence(agent, item, safe_details, occurred_at)
+                    events.append({
+                        "id": f"telemetry:{item.id}:{code}", "kind": "probe_event", "stream_id": stream_id,
+                        "probe_id": agent.id, "probe_name": agent.name, "role": agent.role, "code": code,
+                        "severity": event_severity if event_severity in {"INFO", "WARNING", "CRITICAL"} else "INFO",
+                        "started_at": occurred_at.isoformat(), "ended_at": None,
+                        "state": "ACTIVE" if code.endswith("_START") or code == "KEYFRAME_GAP" else "RESOLVED",
+                        "summary": _probe_event_summary(code),
+                        "explanation": _probe_event_explanation(code, agent.role, safe_details, item.metrics or {}),
+                        "confidence": "UNCONFIRMED", "probable_location": None, "evidence": evidence,
+                    })
+        end_to_start = {"FREEZE_END": "FREEZE_START", "SILENCE_END": "SILENCE_START", "KEYFRAME_GAP_END": "KEYFRAME_GAP"}
+        open_probe_events: dict[tuple[str | None, str], list[dict[str, Any]]] = {}
+        for event in sorted(events, key=lambda item: item["started_at"]):
+            if event["kind"] != "probe_event":
+                continue
+            if event["code"] in end_to_start:
+                key = (event["probe_id"], end_to_start[event["code"]])
+                matching = open_probe_events.get(key)
+                if matching:
+                    start_event = matching.pop(0)
+                    start_event["ended_at"] = event["started_at"]
+                    start_event["state"] = "RESOLVED"
+            elif event["state"] == "ACTIVE":
+                open_probe_events.setdefault((event["probe_id"], event["code"]), []).append(event)
+        incidents = session.scalars(
+            select(Incident).where(
+                Incident.stream_id == stream_id,
+                Incident.opened_at < end,
+                or_(Incident.resolved_at.is_(None), Incident.resolved_at >= start),
+            ).order_by(Incident.opened_at.asc()).limit(10000)
+        ).all()
+        incident_timestamps = [_datetime(incident.opened_at).timestamp() for incident in incidents]
+        selected_names = {agent.name for agent in agents}
+        for incident in incidents:
+            affected = set(incident.affected_agents or [])
+            if probe_ids and affected and not affected.intersection(selected_names):
+                continue
+            if severity and incident.severity.upper() != severity:
+                continue
+            incident_timestamp = _datetime(incident.opened_at).timestamp()
+            near_start = bisect_left(incident_timestamps, incident_timestamp - 600)
+            near_end = bisect_right(incident_timestamps, incident_timestamp + 600)
+            related = sorted(
+                (other for other in incidents[near_start:near_end] if other.id != incident.id),
+                key=lambda other: abs((_datetime(other.opened_at).timestamp() - incident_timestamp)),
+            )[:20]
+            evidence_packet = build_evidence_packet(incident, related)
+            explanation = deterministic_explanation(evidence_packet)
+            evidence_by_id = {item["id"]: item for item in evidence_packet["evidence"]}
+            selected_evidence = [evidence_by_id[item_id] for item_id in explanation.get("evidence_ids", []) if item_id in evidence_by_id]
+            evidence = [{
+                "id": item["id"], "probe_id": None, "metric": f"incident.{item['category']}",
+                "observed_at": None, "value": item["fact"], "unit": None, "comparison": None,
+                "fact": item["fact"],
+            } for item in selected_evidence]
+            confidence = {"low": "UNCONFIRMED", "medium": "LIKELY", "high": "CONFIRMED"}.get(explanation["confidence"], "UNCONFIRMED")
+            events.append({
+                "id": incident.id, "kind": "incident", "stream_id": stream_id,
+                "probe_id": None, "probe_name": ", ".join(sorted(affected)) or None, "role": None,
+                "code": incident.diagnosis, "severity": incident.severity.upper(),
+                "started_at": _datetime(incident.opened_at).isoformat(),
+                "ended_at": _datetime(incident.resolved_at).isoformat() if incident.resolved_at else None,
+                "state": "ACTIVE" if incident.active else "RESOLVED",
+                "summary": _incident_summary(incident.diagnosis),
+                "explanation": explanation["likely_cause"], "cause_key": explanation["cause_key"], "confidence": confidence,
+                "probable_location": incident.probable_location, "evidence": evidence,
+                "evidence_ids": explanation.get("evidence_ids", []),
+                "other_possible_causes": explanation.get("other_possible_causes", []),
+                "next_checks": explanation.get("next_checks", []),
+                "explanation_source": "deterministic_rules",
+                "ai_explanation_available": bool(app.state.openai_api_key),
+            })
+        events.sort(key=lambda item: item["started_at"])
+        return {"stream_id": stream_id, "from": start.isoformat(), "to": end.isoformat(), "generated_at": utcnow().isoformat(), "events": events[:10000]}
+
     @app.post("/api/v1/admin/retention")
     def retention(_admin: bool = Depends(require_admin), session: Session = Depends(get_session)):
         deleted = run_retention(session, config.raw_retention_days, config.incident_retention_days, config.aggregated_retention_days)
@@ -533,6 +987,220 @@ def _incident_dict(incident: Incident) -> dict[str, Any]:
         "probable_location": incident.probable_location, "affected_agents": incident.affected_agents,
         "symptoms": incident.symptoms, "context": incident.context,
     }
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return _datetime(value)
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return _datetime(datetime.fromisoformat(value.replace("Z", "+00:00")))
+    except ValueError:
+        return None
+
+
+def _probe_event_summary(code: str) -> str:
+    labels = {
+        "FREEZE_START": "Відео завмерло.",
+        "FREEZE_DURATION": "Виміряно тривалість завмирання відео.",
+        "FREEZE_END": "Відео знову рухається.",
+        "SILENCE_START": "В аудіо виявлено тишу.",
+        "SILENCE_DURATION": "Виміряно тривалість тиші в аудіо.",
+        "SILENCE_END": "Аудіо відновилося.",
+        "DECODE_ERROR": "Декодер повідомив про помилку.",
+        "PTS_REGRESSION": "Часова позначка відео пішла назад.",
+        "DTS_REGRESSION": "Часова позначка пакета пішла назад.",
+        "PTS_JUMP": "Виявлено стрибок часової позначки PTS.",
+        "KEYFRAME_GAP": "Інтервал між ключовими кадрами перевищив очікуваний.",
+        "KEYFRAME_GAP_END": "Надходження ключових кадрів відновилося.",
+        "STREAM_STALL": "Probe перестав бачити нові медіадані.",
+        "PROGRESS_STALE": "FFmpeg довго не звітував про поступ.",
+        "FFMPEG_DEAD": "Процес FFmpeg перестав передавати медіадані та звіт про роботу.",
+        "FFMPEG_EXIT": "Процес FFmpeg завершився.",
+        "FFMPEG_RESTART": "Probe перезапустив FFmpeg.",
+        "PROBE_ERROR": "Агент повідомив про власну помилку.",
+        "AGENT_OFFLINE": "Probe не надсилає телеметрію.",
+        "STREAM_OFFLINE": "На цій точці потік позначено як недоступний.",
+        "AV_TIMESTAMP_DRIFT": "Часові позначки аудіо й відео розійшлися.",
+        "TCP_RETRANSMISSION": "Мережевий probe зафіксував повторні передачі TCP.",
+        "TCP_RESET": "Мережевий probe зафіксував скидання TCP-з'єднання.",
+        "CONNECTION_RESET": "Мережевий probe зафіксував розрив з'єднання.",
+        "PACKET_LOSS": "Мережевий probe зафіксував втрату ICMP-пакетів.",
+        "RTT_SPIKE": "Мережевий probe зафіксував підвищений RTT.",
+        "SRS_PUBLISH_STATE_UNAVAILABLE": "SRS не надав стан публікації потоку.",
+        "SRS_COUNTERS_UNAVAILABLE": "SRS не надав лічильники руху медіаданих.",
+        "SRS_API_UNAVAILABLE": "Probe не зміг отримати дані від API SRS.",
+        "INGRESS_RECOVERED": "Спостереження за входом SRS відновилося.",
+    }
+    return labels.get(code, "Probe повідомив про подію, для якої ще немає окремого опису.")
+
+
+_SAFE_EVENT_DETAIL_KEYS = {
+    "pts", "previous_pts", "dts", "previous_dts", "value", "gap_seconds", "frame_age_seconds",
+    "decode_errors", "reconnect_count", "rtt_ms", "packet_loss_percent", "tcp_retransmissions",
+    "last_frame_age", "last_frame_age_seconds", "last_audio_age_seconds", "age_seconds", "delta_seconds",
+    "duration_seconds", "seconds_without_keyframe", "threshold_seconds", "expected_gop_seconds",
+    "expected_gop_frames", "progress_age_seconds", "media_age_seconds", "seconds_without_ingress_progress",
+    "stream_index", "return_code",
+}
+
+
+def _safe_event_details(details: dict[str, Any]) -> dict[str, int | float]:
+    safe = {}
+    for key in _SAFE_EVENT_DETAIL_KEYS:
+        value = details.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value):
+            continue
+        safe[key] = value
+    return safe
+
+
+def _probe_event_evidence(agent: Agent, item: Telemetry, details: dict[str, int | float], observed_at: datetime) -> list[dict[str, Any]]:
+    evidence: list[dict[str, Any]] = []
+    units = {
+        "previous_pts": "s", "pts": "s", "previous_dts": "s", "dts": "s", "value": "s",
+        "gap_seconds": "s", "duration_seconds": "s", "frame_age_seconds": "s", "last_frame_age": "s",
+        "last_frame_age_seconds": "s", "last_audio_age_seconds": "s", "age_seconds": "s", "delta_seconds": "s", "rtt_ms": "ms",
+        "seconds_without_keyframe": "s", "threshold_seconds": "s", "expected_gop_seconds": "s",
+        "expected_gop_frames": "frames", "progress_age_seconds": "s", "media_age_seconds": "s",
+        "seconds_without_ingress_progress": "s",
+        "packet_loss_percent": "%", "tcp_retransmissions": "count", "decode_errors": "count",
+        "reconnect_count": "count", "return_code": "code",
+    }
+
+    def add(metric: str, value: Any, unit: str | None, comparison: str | None = None) -> None:
+        if not isinstance(value, (int, float, str, bool)):
+            return
+        if isinstance(value, float) and not isfinite(value):
+            return
+        evidence.append({
+            "probe_id": agent.id, "metric": metric, "observed_at": observed_at.isoformat(),
+            "value": value, "unit": unit, "comparison": comparison,
+        })
+
+    for key, value in details.items():
+        add(f"event.details.{key}", value, units.get(key))
+    metrics = item.metrics if isinstance(item.metrics, dict) else {}
+    media_bitrate = metrics.get("received_media_bitrate_bps")
+    if metrics.get("received_media_bitrate_quality") == "MEASURED" and isinstance(media_bitrate, (int, float)) and not isinstance(media_bitrate, bool):
+        add("received_media_bitrate_bps", media_bitrate, "bps", f"window={metrics.get('measurement_window_seconds', 1)}s")
+    for key, unit in (
+        ("last_frame_age", "s"), ("last_audio_frame_age", "s"), ("decode_errors", "count"),
+        ("last_ingress_progress_age", "s"), ("ingress_recv_kbps_30s", "kbps"),
+        ("ingress_recv_bytes", "bytes"), ("ingress_frames", "count"),
+        ("srs_api_available", None), ("ingress_active", None),
+    ):
+        add(key, metrics.get(key), unit)
+    network = metrics.get("network")
+    if isinstance(network, dict):
+        for key, unit in (("tcp_retransmissions", "count"), ("rtt_ms", "ms"), ("packet_loss_percent", "%"), ("tcp_state", None), ("provider", None)):
+            add(f"network.{key}", network.get(key), unit)
+    return evidence
+
+
+def _probe_event_explanation(code: str, role: str, details: dict[str, int | float], metrics: dict[str, Any]) -> str:
+    point = {
+        "SOURCE": "джерелі",
+        "SERVER_INGRESS": "вході RTMP-сервера",
+        "SERVER_EGRESS": "виході RTMP-сервера",
+        "CLIENT": "клієнті",
+    }.get(role, "точці спостереження")
+    if code == "FREEZE_DURATION":
+        duration = details.get("duration_seconds")
+        if duration is not None:
+            return (f"На {point} FFmpeg виміряв завмирання відео тривалістю {duration:g} с. "
+                    "Це підтверджує тривалість симптому в цій точці, але не визначає, де він виник.")
+        return f"{_probe_event_summary(code)} На цій точці зафіксовано тривалість симптому, але місце його виникнення невідоме."
+    if code in {"SILENCE_DURATION", "SILENCE_END"} and "duration_seconds" in details:
+        ending = "Аудіо відновилося" if code == "SILENCE_END" else "Probe виміряв тишу"
+        return (f"На {point} {ending} після тиші тривалістю {details['duration_seconds']:g} с. "
+                "Це вимірює симптом у цій точці, але не визначає, де виникла причина.")
+    if code == "SILENCE_DURATION":
+        return f"{_probe_event_summary(code)} Причина тиші на цій точці не встановлена."
+    if code == "KEYFRAME_GAP":
+        age = details.get("seconds_without_keyframe")
+        threshold = details.get("threshold_seconds")
+        expected = details.get("expected_gop_seconds")
+        facts = []
+        if age is not None:
+            facts.append(f"ключового кадру не було {age:g} с")
+        if threshold is not None:
+            facts.append(f"поріг становить {threshold:g} с")
+        if expected is not None:
+            facts.append(f"звичний інтервал GOP — {expected:g} с")
+        evidence = f" ({'; '.join(facts)})" if facts else ""
+        return (f"На {point} зафіксовано завеликий інтервал між ключовими кадрами{evidence}. "
+                "Це може заважати декодуванню, але без сусідніх probe не визначає місце виникнення проблеми.")
+    if code == "KEYFRAME_GAP_END":
+        return f"На {point} знову надійшов ключовий кадр. Це позначає кінець інтервалу, але не встановлює його причину."
+    if code == "PTS_REGRESSION" and "previous_pts" in details and "pts" in details:
+        return (f"На {point} PTS зменшився з {details['previous_pts']:g} до {details['pts']:g} с. "
+                "Це підтверджує збій часових позначок у спостереженому потоці, але без одночасного порівняння джерела, входу й виходу RTMP-сервера не визначає, де він виник.")
+    if code == "DTS_REGRESSION" and "previous_dts" in details and "dts" in details:
+        return (f"На {point} DTS зменшився з {details['previous_dts']:g} до {details['dts']:g} с. "
+                "Probe побачив порушення послідовності пакетів; цієї точки недостатньо, щоб встановити джерело проблеми.")
+    if code == "PTS_JUMP" and "delta_seconds" in details:
+        return (f"На {point} PTS стрибнув на {details['delta_seconds']:g} с. Це вказує на розрив часових позначок, "
+                "але саме по собі не визначає джерело проблеми.")
+    if code == "AV_TIMESTAMP_DRIFT" and "delta_seconds" in details:
+        return (f"На {point} часові позначки аудіо й відео розійшлися на {details['delta_seconds']:g} с. "
+                "Це підтверджує розсинхронізацію в точці спостереження, але не визначає, де вона виникла.")
+    if code == "DECODE_ERROR":
+        return f"FFmpeg на {point} повідомив про помилку декодування. Це локалізує симптом у цій точці, але не доводить мережеву чи серверну причину."
+    if code in {"FREEZE_START", "FREEZE_END", "SILENCE_START", "SILENCE_END", "AUDIO_MISSING"}:
+        return f"{_probe_event_summary(code)} Це спостережено на {point}; без одночасних даних із сусідніх probe місце виникнення причини невідоме."
+    if code == "STREAM_STALL":
+        age = details.get("last_media_age_seconds", details.get("seconds_without_ingress_progress"))
+        threshold = details.get("threshold_seconds")
+        evidence = f" Нових медіаданих не було {age:g} с." if age is not None else ""
+        if threshold is not None:
+            evidence += f" Поріг спрацювання — {threshold:g} с."
+        return f"{_probe_event_summary(code)} На {point}.{evidence} Це стан спостереження, а не доказ, де саме зупинився тракт."
+    if code == "STREAM_OFFLINE":
+        if role == "SERVER_INGRESS":
+            return "SRS не показав активну публікацію цього потоку на вході сервера. Це підтверджує відсутність активного publish у відповіді SRS, але не пояснює причину."
+        return f"Потік позначено недоступним на {point}. Це не визначає, чи проблема виникла вище за течією, у мережі або в самій точці."
+    if code in {"SRS_API_UNAVAILABLE", "SRS_COUNTERS_UNAVAILABLE", "SRS_PUBLISH_STATE_UNAVAILABLE"}:
+        return (f"{_probe_event_summary(code)} Це обмежує спостереження за входом SRS; стан медіа на вході невідомий "
+                "і подія сама по собі не доводить збій потоку.")
+    if code == "INGRESS_RECOVERED":
+        return "Probe знову отримує дані для спостереження за входом SRS. Відновлення API/лічильників не підтверджує декодування медіа."
+    if code in {"FFMPEG_DEAD", "FFMPEG_EXIT", "FFMPEG_RESTART", "PROGRESS_STALE", "PROBE_ERROR", "AGENT_OFFLINE"}:
+        age = details.get("progress_age_seconds", details.get("age_seconds"))
+        code_value = details.get("return_code")
+        evidence = f" FFmpeg не звітував {age:g} с." if age is not None else ""
+        if code_value is not None:
+            evidence += f" Код завершення процесу: {code_value:g}."
+        return (f"{_probe_event_summary(code)} Це проблема процесу спостереження на {point}.{evidence} "
+                "Стан самого потоку з цієї події невідомий.")
+    if code == "TCP_RETRANSMISSION":
+        provider = (metrics.get("network") or {}).get("provider") if isinstance(metrics.get("network"), dict) else None
+        if provider == "windows":
+            return "Windows зафіксував retransmits на хості загалом; лічильник не прив'язаний до RTMP-з'єднання, тому не доводить збій цього потоку."
+        return f"TCP probe зафіксував повторні передачі на {point}. Це мережевий симптом; щоб пов'язати його зі збоєм медіа, треба зіставити час із сусідніми probe."
+    if code == "PACKET_LOSS":
+        return f"Probe зафіксував втрату ICMP-відповідей до хоста з боку {point}. Це сигнал доступності/затримки, а не прямий вимір втрати RTMP-медіапакетів."
+    if code in {"RTT_SPIKE", "TCP_RESET", "CONNECTION_RESET"}:
+        return f"{_probe_event_summary(code)} Це мережевий симптом біля {point}, але подія сама не встановлює, чи він спричинив медіазбій."
+    return f"{_probe_event_summary(code)} Це прямий запис probe, але сам маркер не доводить кореневу причину."
+
+
+def _incident_summary(diagnosis: str) -> str:
+    labels = {
+        "CLIENT_PROBLEM": "Клієнтський probe зафіксував проблему приймання або декодування.",
+        "CLIENT_PATH_UNCONFIRMED": "Клієнтський probe зафіксував проблему, але стан виходу сервера невідомий.",
+        "NETWORK_PATH_PROBLEM": "Клієнтський симптом збігся з мережевою ознакою на шляху доставки.",
+        "NETWORK_PATH_UNCONFIRMED": "Є мережевий сигнал біля клієнта, але його зв'язок із RTMP-потоком не доведений.",
+        "SOURCE_OR_INGEST_PROBLEM": "Медіапроблему зафіксовано на джерелі або вході сервера.",
+        "SOURCE_OR_INGEST_UNCONFIRMED": "На джерелі/вході є симптом, але його поширення далі не підтверджене.",
+        "RTMP_SERVER_RESTREAM_PROBLEM": "Вхід сервера виглядав справним, а медіапроблема з'явилася на його виході.",
+        "RTMP_SERVER_RESTREAM_UNCONFIRMED": "На виході сервера є проблема, але справний медіавхід не підтверджений.",
+        "SOURCE_TO_SERVER_UNCONFIRMED": "Проблема між джерелом і виходом сервера не локалізована; probe входу відсутній.",
+        "UPSTREAM_OR_SERVER_UNCONFIRMED": "Не вистачає спостереження входу, щоб розрізнити джерело й RTMP-сервер.",
+        "AGENT_OFFLINE": "Probe не надсилає телеметрію; стан потоку в цій точці невідомий.",
+    }
+    return labels.get(diagnosis, "Зафіксовано інцидент, для якого ще немає окремої класифікації.")
 
 
 def _clock_warning(samples: list[tuple[str, dict[str, Any]]], threshold_ms: float) -> dict[str, Any]:

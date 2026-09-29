@@ -41,6 +41,20 @@ class Agent(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 
+class ProbeEnrollment(Base):
+    """Short-lived, single-use client enrollment capability."""
+    __tablename__ = "probe_enrollments"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    agent_id: Mapped[str] = mapped_column(ForeignKey("agents.id"), nullable=False)
+    code_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    central_url: Mapped[str] = mapped_column(Text, nullable=False)
+    stream_url: Mapped[str] = mapped_column(Text, nullable=False)
+    profile: Mapped[str] = mapped_column(String(16), nullable=False, default="DEEP")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    redeemed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class Telemetry(Base):
     __tablename__ = "telemetry"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)

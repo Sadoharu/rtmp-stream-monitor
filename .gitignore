@@ -1,4 +1,5 @@
 .venv/
+frontend/node_modules/
 __pycache__/
 .pytest_cache/
 *.py[cod]
@@ -7,6 +8,10 @@ build/
 dist/
 data/
 logs/
+backups/
+.env
+secrets/openai_api_key
+.codex-smoke/
 *.db
 *.db-shm
 *.db-wal

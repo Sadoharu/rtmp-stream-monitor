@@ -127,12 +127,76 @@ def test_ffmpeg_progress_rate_is_not_reported_as_source_fps(tmp_path):
             for line in (b"frame=100\n", b"fps=79.48\n", b"progress=continue\n"):
                 yield line
 
-    probe.process = SimpleNamespace(stdout=ProgressLines())
-    asyncio.run(probe._read_stdout())
+    probe.process = SimpleNamespace(stderr=ProgressLines())
+    asyncio.run(probe._read_stderr())
 
     assert probe.stream_metadata["source_fps"] == 50.0
     assert probe.stream_metadata["decode_fps"] == 79.48
     assert "fps" not in probe.stream_metadata
+
+
+def test_deep_framecrc_measures_audio_and_video_packet_bytes_after_warmup(tmp_path, monkeypatch):
+    config = AgentFileConfig.model_validate({
+        "server": {"url": "http://central.example:8090"},
+        "agent": {"name": "client-test", "token": "test-token", "profile": "DEEP"},
+        "streams": [{"id": "poland", "url": "rtmp://server.example/live/poland"}],
+        "state_dir": str(tmp_path / "state"),
+        "log_dir": str(tmp_path / "logs"),
+    })
+    probe = StreamProbe(config.streams[0], config, LocalQueue(tmp_path / "queue.db", 1024 * 1024, 100))
+    monkeypatch.setattr(agent_module.time, "monotonic", lambda: 100.0)
+
+    probe._handle_framecrc_line("#media_type 0: video")
+    probe._handle_framecrc_line("#media_type 1: audio")
+    probe._handle_framecrc_line("#media_type 2: data")
+    probe._handle_framecrc_line("0, 0, 0, 1, 1000, 0x1234")
+    probe._handle_framecrc_line("1, 0, 0, 1, 500, 0x5678")
+    probe._handle_framecrc_line("2, 0, 0, 1, 9000, 0x9abc")
+
+    assert probe.packet_count == 2
+    assert probe._received_media_bitrate_metrics(100.5)["received_media_bitrate_quality"] == "MEASUREMENT_WARMUP"
+    measured = probe._received_media_bitrate_metrics(101.0)
+    assert measured["received_media_bitrate_bps"] == 12_000
+    assert measured["received_media_bitrate_quality"] == "MEASURED"
+    assert measured["received_media_packet_count"] == 2
+
+
+def test_measured_zero_is_different_from_warmup_and_stream_indices_filter_data(tmp_path, monkeypatch):
+    config = AgentFileConfig.model_validate({
+        "server": {"url": "http://central.example:8090"},
+        "agent": {"name": "client-test", "token": "test-token", "profile": "LIGHT"},
+        "streams": [{"id": "poland", "url": "rtmp://server.example/live/poland"}],
+        "state_dir": str(tmp_path / "state"),
+        "log_dir": str(tmp_path / "logs"),
+    })
+    probe = StreamProbe(config.streams[0], config, LocalQueue(tmp_path / "queue.db", 1024 * 1024, 100))
+    monkeypatch.setattr(agent_module.time, "monotonic", lambda: 100.0)
+    probe._video_stream_indices.add("0")
+    probe._audio_stream_indices.add("1")
+    probe._handle_packet_line("stream_index=0|pts_time=1.000|dts_time=1.000|flags=K|size=100")
+    probe._handle_packet_line("stream_index=2|pts_time=1.000|dts_time=1.000|flags=__|size=9000")
+
+    assert sum(size for _, size in probe._packet_bytes) == 100
+    assert probe._received_media_bitrate_metrics(probe._measurement_first_packet_mono + 1.0)["received_media_bitrate_bps"] == 800
+    zero = probe._received_media_bitrate_metrics(probe._measurement_first_packet_mono + 2.1)
+    assert zero["received_media_bitrate_bps"] == 0
+    assert zero["received_media_bitrate_quality"] == "MEASURED"
+
+
+def test_deep_command_uses_a_shared_demux_framecrc_output_and_stderr_progress(tmp_path):
+    config = AgentFileConfig.model_validate({
+        "server": {"url": "http://central.example:8090"},
+        "agent": {"name": "client-test", "token": "test-token", "profile": "DEEP"},
+        "streams": [{"id": "poland", "url": "rtmp://server.example/live/poland"}],
+        "state_dir": str(tmp_path / "state"),
+        "log_dir": str(tmp_path / "logs"),
+    })
+    probe = StreamProbe(config.streams[0], config, LocalQueue(tmp_path / "queue.db", 1024 * 1024, 100))
+    command = probe.command()
+
+    assert command[command.index("-progress") + 1] == "pipe:2"
+    assert command[-11:] == ["-map", "0:v?", "-map", "0:a?", "-c", "copy", "-f", "framecrc", "-hash", "crc32", "pipe:1"]
+    assert command[-3:] == ["-hash", "crc32", "pipe:1"]
 
 
 def test_connection_reset_clears_stale_timestamp_baselines(tmp_path):

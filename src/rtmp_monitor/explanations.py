@@ -12,10 +12,11 @@ from urllib.request import Request, urlopen
 ROLES = {"SOURCE", "SERVER_INGRESS", "SERVER_EGRESS", "CLIENT"}
 STATUSES = {"OK", "WARNING", "CRITICAL", "ERROR", "STREAM_OFFLINE", "STREAM_STALLED", "AGENT_OFFLINE", "TELEMETRY_STALE"}
 EVENT_CODES = {
-    "KEYFRAME_GAP", "DECODE_ERROR", "FREEZE_START", "FREEZE_END", "STREAM_STALL", "FFMPEG_DEAD",
+    "KEYFRAME_GAP", "KEYFRAME_GAP_END", "DECODE_ERROR", "FREEZE_START", "FREEZE_DURATION", "FREEZE_END", "STREAM_STALL", "FFMPEG_DEAD",
     "FFMPEG_EXIT", "PROBE_ERROR", "DTS_REGRESSION", "PTS_REGRESSION", "PTS_JUMP", "PROGRESS_STALE",
-    "SILENCE_START", "AUDIO_MISSING", "AV_TIMESTAMP_DRIFT", "FFMPEG_RESTART", "AGENT_OFFLINE",
+    "SILENCE_START", "SILENCE_DURATION", "SILENCE_END", "AUDIO_MISSING", "AV_TIMESTAMP_DRIFT", "FFMPEG_RESTART", "AGENT_OFFLINE",
     "STREAM_OFFLINE", "TCP_RETRANSMISSION", "TCP_RESET", "PACKET_LOSS", "RTT_SPIKE", "CONNECTION_RESET",
+    "SRS_PUBLISH_STATE_UNAVAILABLE", "SRS_COUNTERS_UNAVAILABLE", "SRS_API_UNAVAILABLE", "INGRESS_RECOVERED",
 }
 MEDIA_EVENT_CODES = {
     "KEYFRAME_GAP", "DECODE_ERROR", "FREEZE_START", "STREAM_STALL", "FFMPEG_DEAD", "FFMPEG_EXIT",
@@ -30,6 +31,7 @@ CAUSE_KEYS = [
 METRIC_KEYS = {
     "profile", "ffmpeg_running", "last_frame_age", "last_audio_frame_age", "decode_errors", "fps",
     "resolution", "video_codec", "audio_codec", "bitrate", "last_keyframe_age", "current_gop_duration",
+    "received_media_bitrate_bps", "received_media_bitrate_quality", "measurement_window_seconds", "received_media_packet_count",
     "current_gop_frames", "expected_gop_frames", "expected_gop_seconds", "last_media_pts", "last_media_dts",
     "reconnect_count", "ingress_recv_kbps_30s", "ingress_recv_bytes", "ingress_video_frames",
     "ingress_audio_frames", "ingress_frames", "last_ingress_progress_age", "source_fps",
@@ -42,8 +44,11 @@ NETWORK_KEYS = {
     "packet_loss_percent", "icmp_reply_count", "icmp_probe_count", "provider", "icmp_status",
 }
 EVENT_DETAIL_KEYS = {
-    "pts", "previous_pts", "dts", "previous_dts", "gap_seconds", "frame_age_seconds", "decode_errors",
+    "pts", "previous_pts", "dts", "previous_dts", "value", "gap_seconds", "frame_age_seconds", "decode_errors",
     "reconnect_count", "rtt_ms", "packet_loss_percent", "tcp_retransmissions", "last_frame_age",
+    "last_frame_age_seconds", "last_audio_age_seconds", "duration_seconds",
+    "seconds_without_keyframe", "threshold_seconds", "expected_gop_seconds", "expected_gop_frames",
+    "progress_age_seconds", "media_age_seconds", "seconds_without_ingress_progress", "return_code", "stream_index",
 }
 SCHEMA = {
     "type": "object",
@@ -73,8 +78,9 @@ def _safe_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key in METRIC_KEYS:
         value = metrics.get(key)
-        if key in {"profile", "video_codec", "audio_codec"}:
-            if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.+-]{1,32}", value):
+        if key in {"profile", "video_codec", "audio_codec", "received_media_bitrate_quality"}:
+            allowed = {"MEASURED", "MEASUREMENT_WARMUP", "MEASUREMENT_UNAVAILABLE"} if key == "received_media_bitrate_quality" else None
+            if isinstance(value, str) and ((allowed is not None and value in allowed) or (allowed is None and re.fullmatch(r"[A-Za-z0-9_.+-]{1,32}", value))):
                 result[key] = value
         elif key == "ingress_quality":
             if isinstance(value, str) and value in {"MEDIA_VALIDATED", "PUBLISHER_COUNTERS_ONLY", "UNAVAILABLE", "UNKNOWN"}:
@@ -506,11 +512,11 @@ def build_evidence_packet(incident: Any, related: list[Any]) -> dict[str, Any]:
             sample_fact("network", f"{sample['probe']}: стан TCP = {network['tcp_state']}.")
         if _has_useful_network_sample(metrics):
             if network.get("provider") == "linux" and network.get("tcp_state", "").upper() in {"ESTABLISHED", "ESTAB"} and _number(network.get("tcp_retransmissions")) == 0:
-                sample_fact("network", f"{sample['probe']}: Linux per-flow TCP snapshot showed an established socket and 0 retransmits for this interval; that snapshot does not rule out every delivery problem.")
+                sample_fact("network", f"{sample['probe']}: Linux зафіксував активне TCP-з'єднання і 0 повторних передач за цей інтервал; цей вимір не виключає всіх проблем доставки.")
             elif network.get("provider") == "windows" and _number(network.get("tcp_retransmissions")) == 0:
-                sample_fact("network", f"{sample['probe']}: Windows host-wide retransmit counter showed 0 for this interval; it is not specific to the RTMP flow and does not prove the path was clean.")
+                sample_fact("network", f"{sample['probe']}: загальний лічильник Windows показав 0 повторних передач за цей інтервал; він не прив'язаний до RTMP-з'єднання і не доводить, що шлях був без проблем.")
             elif _number(network.get("rtt_ms")) is not None and network["rtt_ms"] <= 100:
-                sample_fact("network", f"{sample['probe']}: ICMP RTT was {network['rtt_ms']:g} ms; this measures host reachability and does not alone prove RTMP media delivery was healthy.")
+                sample_fact("network", f"{sample['probe']}: ICMP RTT становив {network['rtt_ms']:g} мс; це вимір доступності хоста, він сам по собі не доводить, що RTMP-медіа доставлялося без проблем.")
     diagnoses = [item["diagnosis"] for item in episodes]
     repeated = sum(1 for value in diagnoses if value == str(incident.diagnosis))
     if repeated > 1:

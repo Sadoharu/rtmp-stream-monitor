@@ -11,11 +11,88 @@
 
 Для клієнтського probe вкажіть публічний URL потоку, наприклад `rtmp://stream.example.net:1935/live/demo`. Для локального виходу сервера можна використати `rtmp://127.0.0.1:1935/live/demo`. Перевірте, що порт central API `8090` доступний агентам.
 
+### Enrollment probe
+
+Спершу додайте потік і задайте адресу для потрібної точки: `public_url` для віддаленого клієнта, `local_url` для виходу RTMP-сервера або `source_url` для encoder. У розділі **Пункти спостереження** виберіть потік, роль, Windows/Ubuntu і профіль; панель видасть одноразовий код та готові команди. Код діє 15 хвилин і створює лише вибраний probe. Для віддалених агентів відкривайте панель через HTTPS.
+
+На Windows команда майстра спершу шукає останній Windows ZIP і перевіряє SHA-256. Опублікований пакет містить приватний Python runtime, тож окремо встановлювати Python не потрібно; FFmpeg/ffprobe інсталятор ставить machine-wide через WinGet. Якщо GitHub Release ще не опублікований або Windows asset недоступний, команда переходить на source installer, для якого потрібен машинний Python 3.12+. На Ubuntu майстер так само спершу завантажує останній `.deb` та перевіряє SHA-256, після чого `apt` встановлює системні залежності, а інсталятор приховано просить enrollment code. Для Ubuntu 22.04 достатньо Python 3.10; замінювати `/usr/bin/python3` і вручну редагувати YAML не потрібно. До першої публікації GitHub Release майстер використовує source fallback. Ручна реєстрація доступна через `POST /api/v2/probe-enrollments`, а готовий YAML можна встановити командою `sudo ./install.sh agent --config /path/to/agent.yaml`. `SERVER_INGRESS` поки під'єднується ручним способом, бо йому потрібна окрема SRS API конфігурація.
+
 Correlation використовує останні спостереження кожної ролі у 20-секундному wall-clock вікні та перевіряє розкид media PTS (default tolerance 5 секунд). PTS lag від локального egress до клієнта підтримує діагноз network path, коли обидва probes працюють у `LIGHT` mode; у `DEEP` mode lag може бути наслідком повільного decode. SRS SERVER_INGRESS counters підтверджують publisher і рух байтів, але не доводять, що вхідні кадри декодуються чи мають коректний GOP. Для frame-level source/media діагнозу використовуйте SOURCE probe або decoded ingress adapter; без такої перевірки місце збою лишається непідтвердженим. Це ймовірне місце, не математичний доказ: RTMP/TCP не переносить наскрізний ідентифікатор кадру, тому точна прив'язка до одного media packet між різними probes обмежена.
 
 Докладніше про обраний аналіз та обмеження — [docs/architecture.md](docs/architecture.md).
 
 ## Встановлення центрального сервера Ubuntu
+
+### Docker Compose (рекомендовано для нової інсталяції)
+
+Потрібні Docker Engine і Docker Compose plugin v2. У каталозі репозиторію запустіть від звичайного користувача, який має доступ до Docker (не через `sudo`):
+
+```bash
+./docker-setup.sh
+```
+
+Майстер запитає порт панелі й запустить central service. Він завантажує налаштований версійний образ `ghcr.io/sadoharu/rtmp-stream-monitor`; якщо образ ще не опублікований або недоступний, збирає його з поточного checkout. SQLite та admin token зберігаються в іменованому Docker volume `central-data`, логи — у `central-logs`, а backup bundles — у локальному `backups/`. Команда виведе адресу панелі й admin token. Старі каталоги `data/` і `logs/` імпортуються у volumes один раз, якщо volumes ще порожні. Не додавайте `.env`, `secrets/openai_api_key`, `data/`, `logs/` або `backups/` до Git.
+
+Перевірити стан і логи:
+
+```bash
+docker compose ps
+docker compose logs -f central
+curl -fsS http://127.0.0.1:8090/healthz
+```
+
+Для підключення віддалених probes налаштуйте HTTPS reverse proxy та firewall; майстер enrollment вимагає HTTPS для віддаленого central URL. Порт за замовчуванням слухає всі адреси. Локальну адресу прив'язки та порт можна змінити у `.env` (`RTMP_MONITOR_BIND_HOST`, `RTMP_MONITOR_PORT`). OpenAI-пояснення вимкнені, доки ви не запишете ключ у Docker secret:
+
+```bash
+chmod 700 secrets
+umask 077
+printf '%s' 'YOUR_OPENAI_API_KEY' > secrets/openai_api_key
+docker compose up -d --force-recreate central
+```
+
+Не кладіть ключ у `.env`, YAML чи probe-конфіг.
+
+Резервна копія з узгодженого SQLite snapshot і перевіркою цілісності:
+
+```bash
+./scripts/docker-backup.sh
+```
+
+Відновлення з backup зупиняє central service, зберігає поточну базу перед заміною і запускає service з відновленою базою:
+
+```bash
+./scripts/docker-restore.sh ./backups/central-YYYYMMDDTHHMMSSZ.tar.gz
+docker compose ps
+```
+
+Backup bundle містить узгоджену SQLite-копію та admin token; файл має права лише для власника. Зберігайте його поза сервером у захищеному сховищі. Bundle не містить `.env` і `secrets/openai_api_key`; зберігайте секрет окремо. Для оновлення зробіть backup, задайте потрібний тег образу у `.env` (наприклад, `RTMP_MONITOR_IMAGE=ghcr.io/sadoharu/rtmp-stream-monitor:0.1.0`) і виконайте `./docker-setup.sh`. Якщо образ цього тегу ще не опублікований, setup збере поточний checkout. Якщо нова версія несумісна з даними, поверніть попередній тег образу й виконайте restore.
+
+#### Перенесення з наявного systemd сервера
+
+На тому самому хості використовуйте той самий каталог checkout для Compose. Спершу створіть `.env` і каталоги без запуску контейнера, звичайним користувачем:
+
+```bash
+./docker-setup.sh --prepare-only
+sudo systemctl stop rtmp-monitor-central
+sudo env PYTHONPATH="$PWD/src" python3 -m rtmp_monitor.docker_migration \
+  --snapshot-source /var/lib/rtmp-monitor/central.db \
+  --snapshot-target "$PWD/data/central.db"
+sudo install -o "$(id -u)" -g "$(id -g)" -m 600 /var/lib/rtmp-monitor/admin.token data/admin.token
+./docker-setup.sh
+docker compose ps
+```
+
+Команда створює SQLite snapshot через `Connection.backup()`, перевіряє integrity та кількість рядків таблиць і відмовляється перезаписувати наявну ціль. Вона безпечніша за копіювання одного `central.db`, якщо поряд є WAL-файл. Оригінали в `/var/lib/rtmp-monitor` лишаються на місці. `docker-setup.sh` повторно перевіряє та імпортує пару DB/token у порожній named volume. Після перевірки панелі вимкніть автозапуск старого сервісу, щоб він не зайняв той самий порт після reboot:
+
+```bash
+sudo systemctl disable rtmp-monitor-central
+```
+
+Rollback: зупиніть Compose, вивантажте DB/token із named volume командами `docker compose run --rm --no-deps -T --entrypoint cat central /data/central.db > data/central.db` та аналогічною для `/data/admin.token`, встановіть ці файли назад у `/var/lib/rtmp-monitor/`, поверніть власника `rtmp-monitor:rtmp-monitor`, потім `sudo systemctl enable --now rtmp-monitor-central`. Старий systemd binary/config не видаляйте, доки Compose версія не перевірена.
+
+SQLite, Compose healthcheck, setup і backup/restore описані докладніше у [звіті M4](docs/m4-docker-compose.md).
+
+### Systemd / Python (альтернативний спосіб)
 
 ```bash
 sudo ./install.sh
@@ -93,47 +170,32 @@ sudo journalctl -u rtmp-monitor-agent -f
 
 ## Встановлення Windows probe
 
-1. Створіть probe у Dashboard і скопіюйте його YAML у `config/agent.yaml` (або передайте інший шлях у параметрі `-ConfigPath`).
-2. Встановіть Python 3.12+ x64 **для всіх користувачів** (у звичайному інсталяторі Python виберіть `Install for all users`). Windows-служба запускається від `LocalSystem`, тому Python із профілю `C:\Users\...` їй недоступний. Інсталятор автоматично шукає машинну інсталяцію в реєстрі Windows та `C:\Program Files`, незалежно від того, який Python обирає `py -3`. Якщо Python розташований в іншій машинно-доступній папці поза профілем користувача, передайте його повний шлях через `-PythonPath`; шлях під `C:\Users\...` буде відхилено. Служба використовує вибраний машинний Python без virtualenv, як рекомендує [pywin32 для Windows Services](https://github.com/mhammond/pywin32#running-as-a-windows-service). FFmpeg також має бути встановлений поза профілем користувача; інсталятор записує абсолютні шляхи `ffmpeg.exe` і `ffprobe.exe` у захищений конфіг, щоб служба знайшла їх під `LocalSystem`. Наприклад: `winget install --id Gyan.FFmpeg --scope machine`.
+1. У Dashboard відкрийте **Пункти спостереження**, виберіть потік, роль `CLIENT`, платформу Windows і профіль. Створіть одноразовий код та скопіюйте згенеровану команду PowerShell.
+2. Запустіть PowerShell **від Administrator** і вставте команду з майстра. Вона завантажить ZIP у `%TEMP%`, перевірить SHA-256, розпакує пакет і запустить інсталятор; Git і системний Python не потрібні. Якщо ZIP ще не опублікований, команда перейде на source fallback, для якого потрібен machine-wide Python 3.12+. Введіть одноразовий код у прихованому запиті. Інсталятор перевірить FFmpeg/ffprobe і за потреби встановить їх machine-wide через WinGet. Перегляньте та прийміть умови пакетів, показані WinGet. Документація Microsoft описує [WinGet](https://learn.microsoft.com/en-us/windows/package-manager/winget/install); FFmpeg пакет: [Gyan.FFmpeg](https://github.com/microsoft/winget-pkgs/tree/master/manifests/g/Gyan/FFmpeg). Якщо WinGet відсутній, встановіть FFmpeg machine-wide вручну. Служба запускається від `LocalSystem`, тому не використовує програми з `C:\Users\...`.
 
-   Python Launcher `py` навмисно надає перевагу per-user інсталяції перед system-wide, тому `py -3.13` може показувати шлях з `AppData`, навіть якщо окрема машинна копія Python також встановлена ([документація Python Launcher](https://docs.python.org/3/using/windows.html#python-launcher-for-windows)). Це не доводить, що системної копії немає. Перевірте інтерпретатори та машинні шляхи в PowerShell:
-
-   ```powershell
-   py -0p
-   Get-ChildItem "$env:ProgramFiles\Python*" -Directory -ErrorAction SilentlyContinue |
-     ForEach-Object { Join-Path $_.FullName 'python.exe' } |
-     Where-Object { Test-Path $_ }
-   Get-ChildItem 'HKLM:\SOFTWARE\Python\PythonCore' -ErrorAction SilentlyContinue |
-     ForEach-Object {
-       $key = Join-Path $_.PSPath 'InstallPath'
-       if (Test-Path $key) {
-         [pscustomobject]@{ Version = $_.PSChildName; Path = (Get-Item $key).GetValue('') }
-       }
-     }
-   ```
-
-   Машинна інсталяція зазвичай розташована в `C:\Program Files\Python313\python.exe`; шлях із `C:\Users\...\AppData\...` належить профілю користувача. Під час встановлення `install.ps1` друкує версію та повний шлях вибраного Python (`Using Python ... at ...`).
-
-3. Запустіть PowerShell від Administrator:
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\install.ps1
-```
+Пакетний інсталятор розміщує приватний Python runtime у `%ProgramFiles%\RTMPMonitor\runtime`. Оновлення замінює runtime та перезапускає службу, зберігаючи налаштування й локальну чергу. Для source fallback `install.ps1` використовує machine-wide Python 3.12+; Python Launcher `py` може показувати per-user версію, тому fallback шукає Python у машинній інсталяції, а не покладається на перший результат `py`.
 
 Installer створює Windows Service `RtmpMonitorAgent` з automatic startup. Перевірити стан можна через `Get-Service RtmpMonitorAgent`; структуровані логи зберігаються в `%ProgramData%\RtmpMonitor\logs`.
 
+Для повного видалення зупиніть і видаліть службу, програмні файли, локальний токен, конфігурацію, чергу та логи з PowerShell Administrator:
+
+```powershell
+.\uninstall.ps1
+```
+
+Скрипт просить підтвердження. Параметр `-KeepLocalData` лишає `%ProgramData%\RTMPMonitor` для перевстановлення або ручного збереження черги. Після видалення агента його запис і вже надіслана історія лишаються на central server; у Dashboard можна видалити probe, щоб відкликати його токен, не втрачаючи історію.
+
 При оновленні інсталятор зберігає наявний `%ProgramData%\RtmpMonitor\agent.yaml`. Щоб замінити його новим Dashboard YAML, запустіть `.\install.ps1 -ConfigPath .\config\agent.yaml -ReplaceConfig`.
 
-## Додавання stream та probe
+## Додавання потоку та клієнтів
 
-У stream зберігаються три окремі URL: `source_url` (за наявності), `local_url` для сервера та `public_url` для клієнтів. Не підміняйте `source_url` loopback адресою сервера. Для кожної комбінації `agent + stream` створюйте окремий probe й окремий токен. Клієнтів можна додавати скільки потрібно.
+У розділі **Потоки** додайте RTMP-потік, який уже передає ваша encoder/RTMP-система. Monitor не публікує потік і не перезапускає його: він відкриває його як читач. Збережіть три адреси окремо: `source_url` — encoder, `local_url` — loopback-адреса на RTMP-сервері, `public_url` — адреса, доступна клієнтам. Наприклад, якщо потік називається `poland`, локальна адреса може бути `rtmp://127.0.0.1:1935/live/poland`, а клієнтська — `rtmp://stream.example.net:1935/live/poland`.
 
-Dashboard після створення probe один раз показує готовий YAML із token, stream URL і network destination. Збережіть його на відповідному host перед інсталяцією.
+Потім відкрийте **Пункти спостереження** й створіть probe для кожної машини та ролі. Майстер видає одноразовий enrollment code і команду інсталяції, тож не потрібно вручну збирати YAML чи копіювати довготривалий токен. Додайте `SERVER_EGRESS` на RTMP-сервер і один або кілька `CLIENT` на мережевих клієнтах. `SOURCE` додавайте на encoder, якщо треба звузити пошук несправності до або після RTMP-сервера.
 
 ## Dashboard та incidents
 
-Головний екран показує стан кожного агента окремо від стану потоку, заявлений input FPS, окрему швидкість обробки FFmpeg, codec, bitrate, frame age, keyframe/GOP, decode errors, CPU/RAM, RTT і transport counters. Швидкість FFmpeg може бути вищою або нижчою за частоту джерела й не є FPS потоку. Timeline синхронізується за wall-clock часом і містить telemetry за останні шість годин. Статуси зменшуються окремо для кожного probe, а event та суттєві network samples зберігаються з точним часом; маркери клікабельні й відкривають пов'язаний incident або деталі sample. Клік на incident відкриває symptoms, timeline-контекст і останні суттєві рядки FFmpeg stderr.
+Сторінка потоку показує виміряний бітрейт окремою лінією для кожного probe; значення можна приховати, щоб порівняти решту. Прогалини телеметрії лишаються прогалинами, короткі спади зберігаються як мінімум бакета, а перемикачі періоду й zoom допомагають знайти точний час. Під графіком на спільній часовій шкалі відображаються інциденти, помилки агента й медіаподії; натисніть маркер, щоб побачити пояснення, виміри-докази, рівень упевненості та наступні перевірки. Головна сторінка також показує стан probe, FPS, codec, останній keyframe/GOP, decode errors, RTT і retransmits.
 
 Incident створюється із симптомів, видимих у відповідних probes. Система використовує `Probable location` там, де точну причину неможливо довести. Агент offline показується окремо від stream offline/stalled.
 
@@ -198,7 +260,11 @@ sudo rm /etc/systemd/system/rtmp-monitor-central.service
 sudo systemctl daemon-reload
 ```
 
-Щоб прибрати client probe із сервера, натисніть **Remove probe** на його картці після оновлення версії з цією функцією або викличте `DELETE /api/v1/agents/{agent_id}` із Dashboard bearer token. Це відкликає його token і прибирає картку з активних probes, але зберігає історичні telemetry та incidents. Повторно створивши probe з тим самим ім'ям, можна зареєструвати його знову. Щоб повністю прибрати програму на Ubuntu-клієнті, спершу виконайте `sudo systemctl disable --now rtmp-monitor-agent.service`, потім видаліть unit та програму: `sudo rm -f /etc/systemd/system/rtmp-monitor-agent.service && sudo systemctl daemon-reload`, `sudo rm -rf /opt/rtmp-monitor-agent /etc/rtmp-monitor-agent`. Для Windows зупиніть і видаліть службу в elevated PowerShell (`Stop-Service RtmpMonitorAgent; sc.exe delete RtmpMonitorAgent`), після чого за потреби видаліть `C:\Program Files\RTMPMonitor` і конфігурацію/логи в `C:\ProgramData\RtmpMonitor`. Видалення `/var/lib/rtmp-monitor` або `/var/lib/rtmp-monitor-agent` знищує базу/чергу та потребує окремого підтвердження адміністратора.
+Щоб прибрати client probe із сервера, натисніть **Remove probe** на його картці після оновлення версії з цією функцією або викличте `DELETE /api/v1/agents/{agent_id}` із Dashboard bearer token. Це відкликає його token і прибирає картку з активних probes, але зберігає історичні telemetry та incidents. Повторно створивши probe з тим самим ім'ям, можна зареєструвати його знову. На Windows не видаляйте службу командою `sc.exe delete` перед зупинкою: відкрийте PowerShell від Administrator у каталозі репозиторію та виконайте `.\uninstall.ps1`. Скрипт спочатку зупиняє службу, потім видаляє її та `C:\Program Files\RTMPMonitor`; за замовчуванням також прибирає локальні config/queue/logs із `C:\ProgramData\RTMPMonitor`. Для Ubuntu без Debian package зупиніть службу й приберіть unit та програму: `sudo systemctl disable --now rtmp-monitor-agent.service && sudo rm -f /etc/systemd/system/rtmp-monitor-agent.service && sudo systemctl daemon-reload && sudo rm -rf /opt/rtmp-monitor-agent /etc/rtmp-monitor-agent`. Видалення `/var/lib/rtmp-monitor` або `/var/lib/rtmp-monitor-agent` знищує базу/чергу та потребує окремого підтвердження адміністратора.
+
+Після Windows uninstall перевірте стан команди `Get-Service RtmpMonitorAgent -ErrorAction SilentlyContinue` і теки `Test-Path "$env:ProgramFiles\RTMPMonitor"`, `Test-Path "$env:ProgramData\RTMPMonitor"`. Якщо раніше вже виконали `sc.exe delete RtmpMonitorAgent`, наступний `Stop-Service` може відповісти, що службу не знайдено: запит видалення вже поданий. Якщо `sc.exe query RtmpMonitorAgent` повертає помилку 1072 (службу позначено для видалення), перезавантажте Windows, щоб звільнити її системний handle.
+
+Для probe, встановленого Debian package, виконайте `sudo apt remove rtmp-monitor-agent`: це зупиняє службу та прибирає програму, залишаючи конфігурацію в `/etc/rtmp-monitor-agent` і локальну чергу/логи. `sudo apt purge rtmp-monitor-agent` додатково видаляє конфігурацію; `/var/lib/rtmp-monitor-agent` і `/var/log/rtmp-monitor-agent` залишаються, доки адміністратор не прибере їх окремо.
 
 Щоб прибрати центральний код і конфігурацію після зупинки служби, виконайте `sudo rm -rf /opt/rtmp-monitor /etc/rtmp-monitor`; для probe використайте `/opt/rtmp-monitor-agent /etc/rtmp-monitor-agent`. Щоб також видалити дані, окремо перевірте та видаліть відповідний `/var/lib/rtmp-monitor*` каталог і логи. На Windows у elevated PowerShell зупиніть та видаліть службу командами `Stop-Service RtmpMonitorAgent` і `sc.exe delete RtmpMonitorAgent`. За потреби видаліть пакет `rtmp-stream-monitor` із машинного Python, шлях до якого надрукував інсталятор (`<python.exe> -m pip uninstall rtmp-stream-monitor`), потім видаліть `C:\Program Files\RTMPMonitor` і, якщо не потрібні, логи та конфігурацію в `C:\ProgramData\RtmpMonitor`.
 
@@ -211,6 +277,19 @@ python -m pip install -e ".[test]"
 python -m pytest
 rtmp-monitor server --config config/central.dev.yaml
 ```
+
+Зміни панелі робіть у `frontend/`. Для локальної роботи фронтенд проксить API до central service на `127.0.0.1:8090`; перед перевіркою в браузері запустіть backend, потім:
+
+```powershell
+cd frontend
+npm ci
+npm run typecheck
+npm run build
+```
+
+Для dev server відкрийте окремий термінал у `frontend/` і запустіть `npm run dev`.
+
+Production-збірка потрапляє до `src/rtmp_monitor/static/` і віддається FastAPI. `npm run build` не запускається на production-хості.
 
 Перевірки classifier симулюють source, restream, network-path та client-only failures. Live acceptance test треба виконати на тих Ubuntu/Windows hosts і через той самий RTMP шлях, де система працюватиме цілодобово.
 

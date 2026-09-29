@@ -70,8 +70,12 @@ class StreamProbe:
         self._reading_input_metadata = False
         self._video_stream_indices: set[str] = set()
         self._audio_stream_indices: set[str] = set()
+        self._framecrc_media_types: dict[str, str] = {}
         self.packet_count = 0
         self._packet_bytes: deque[tuple[float, int]] = deque()
+        self._bitrate_window_seconds = 1.0
+        self._measurement_first_packet_mono: float | None = None
+        self._progress_pending: dict[str, str] = {}
 
     @property
     def is_running(self) -> bool:
@@ -93,12 +97,13 @@ class StreamProbe:
         interval = str(self.config.monitoring.progress_interval)
         return [
             ffmpeg, "-hide_banner", "-nostats", "-loglevel", "info", "-debug_ts",
-            "-progress", "pipe:1", "-stats_period", interval,
+            "-progress", "pipe:2", "-stats_period", interval,
             "-rw_timeout", "15000000", "-i", self.stream.url,
             "-map", "0:v?", "-map", "0:a?",
             "-vf", f"freezedetect=n=-60dB:d={self.config.monitoring.freeze_threshold},showinfo",
             "-af", f"silencedetect=n=-50dB:d={self.config.monitoring.silence_threshold},ashowinfo",
             "-f", "null", "-",
+            "-map", "0:v?", "-map", "0:a?", "-c", "copy", "-f", "framecrc", "-hash", "crc32", "pipe:1",
         ]
 
     async def run(self) -> None:
@@ -182,31 +187,106 @@ class StreamProbe:
                 if line:
                     self._handle_packet_line(line)
         else:
-            progress: dict[str, str] = {}
             async for raw in self.process.stdout:
                 line = raw.decode("utf-8", "replace").strip()
-                if not line or "=" not in line:
-                    continue
-                key, value = line.split("=", 1)
-                if key == "progress":
-                    self.last_progress = progress
-                    self.last_progress_mono = time.monotonic()
-                    try:
-                        self.last_progress_frame = int(progress.get("frame", self.last_progress_frame))
-                    except ValueError:
-                        pass
-                    if progress.get("fps"):
-                        # FFmpeg progress reports output processing throughput, which can
-                        # exceed the stream's advertised/observed input frame rate.
-                        self.stream_metadata["decode_fps"] = _number(progress["fps"])
-                    if progress.get("bitrate"):
-                        self.stream_metadata["bitrate"] = progress["bitrate"]
-                    if progress.get("out_time"):
-                        self.stream_metadata["media_time"] = progress["out_time"]
-                    self.active_events.pop("PROGRESS_STALE", None)
-                    progress = {}
-                else:
-                    progress[key] = value
+                if line:
+                    self._handle_framecrc_line(line)
+
+    def _handle_progress_line(self, line: str) -> bool:
+        """Consume FFmpeg's key/value progress records from stderr."""
+        if "=" not in line:
+            return False
+        key, value = line.split("=", 1)
+        if key not in {"frame", "fps", "bitrate", "out_time", "out_time_us", "total_size", "speed", "progress"}:
+            return False
+        if key != "progress":
+            self._progress_pending[key] = value
+            return True
+
+        self.last_progress = dict(self._progress_pending)
+        self.last_progress_mono = time.monotonic()
+        try:
+            self.last_progress_frame = int(self._progress_pending.get("frame", self.last_progress_frame))
+        except ValueError:
+            pass
+        if self._progress_pending.get("fps"):
+            # This is FFmpeg output processing throughput, not source frame rate.
+            self.stream_metadata["decode_fps"] = _number(self._progress_pending["fps"])
+        if self._progress_pending.get("bitrate"):
+            # Keep the output value explicit; it is not the received RTMP media rate.
+            self.stream_metadata["ffmpeg_output_bitrate"] = self._progress_pending["bitrate"]
+        if self._progress_pending.get("out_time"):
+            self.stream_metadata["media_time"] = self._progress_pending["out_time"]
+        self.active_events.pop("PROGRESS_STALE", None)
+        self._progress_pending.clear()
+        return True
+
+    def _handle_framecrc_line(self, line: str) -> None:
+        media_type = re.match(r"#media_type\s+(\d+):\s*(video|audio)\b", line)
+        if media_type:
+            self._framecrc_media_types[media_type.group(1)] = media_type.group(2)
+            return
+        if line.startswith("#"):
+            return
+        fields = [part.strip() for part in line.split(",")]
+        if len(fields) < 5 or not fields[0].isdigit() or self._framecrc_media_types.get(fields[0]) not in {"video", "audio"}:
+            return
+        try:
+            size = int(fields[4])
+        except ValueError:
+            return
+        now = time.monotonic()
+        self.packet_count += 1
+        self.last_packet_mono = now
+        self.last_progress_mono = now
+        media_type = self._framecrc_media_types[fields[0]]
+        if media_type == "video":
+            self.last_video_packet_mono = now
+        else:
+            self.last_audio_frame_mono = now
+            self.active_events.pop("AUDIO_MISSING", None)
+        self._record_media_packet(now, size)
+
+    def _record_media_packet(self, now: float, size: int) -> None:
+        if size < 0:
+            return
+        if self._measurement_first_packet_mono is None:
+            self._measurement_first_packet_mono = now
+        self._packet_bytes.append((now, size))
+        cutoff = now - self._bitrate_window_seconds
+        while self._packet_bytes and self._packet_bytes[0][0] < cutoff:
+            self._packet_bytes.popleft()
+
+    def _received_media_bitrate_metrics(self, now: float) -> dict[str, Any]:
+        supported = bool(self._framecrc_media_types) if self.config.agent.profile == "DEEP" else bool(self._video_stream_indices or self._audio_stream_indices)
+        if not supported:
+            return {
+                "received_media_bitrate_bps": None,
+                "received_media_bitrate_quality": "MEASUREMENT_UNAVAILABLE",
+                "measurement_window_seconds": self._bitrate_window_seconds,
+                "received_media_packet_count": 0,
+                "sample_interval_seconds": 1.0,
+            }
+        cutoff = now - self._bitrate_window_seconds
+        while self._packet_bytes and self._packet_bytes[0][0] < cutoff:
+            self._packet_bytes.popleft()
+        first_packet_at = self._measurement_first_packet_mono
+        if first_packet_at is None or now - first_packet_at < self._bitrate_window_seconds:
+            return {
+                "received_media_bitrate_bps": None,
+                "received_media_bitrate_quality": "MEASUREMENT_WARMUP",
+                "measurement_window_seconds": self._bitrate_window_seconds,
+                "received_media_packet_count": len(self._packet_bytes),
+                "sample_interval_seconds": 1.0,
+            }
+        bitrate = round(sum(size for _, size in self._packet_bytes) * 8 / self._bitrate_window_seconds)
+        return {
+            "received_media_bitrate_bps": bitrate,
+            "received_media_bitrate_quality": "MEASURED",
+            "measurement_window_seconds": self._bitrate_window_seconds,
+            "received_media_packet_count": len(self._packet_bytes),
+            "sample_interval_seconds": 1.0,
+        }
 
     def _handle_packet_line(self, line: str) -> None:
         now = time.monotonic()
@@ -251,9 +331,8 @@ class StreamProbe:
             size = _float_or_none(fields["size"])
             if size is not None:
                 self.stream_metadata["last_packet_bytes"] = size
-                self._packet_bytes.append((now, int(size)))
-                while self._packet_bytes and now - self._packet_bytes[0][0] > 10:
-                    self._packet_bytes.popleft()
+                if stream_index in self._video_stream_indices or stream_index in self._audio_stream_indices:
+                    self._record_media_packet(now, int(size))
 
     def _packet_keyframe(self, now: float, details: dict[str, str]) -> None:
         # Packet/key flags in LIGHT mode identify key packets, not codec-level IDR certainty.
@@ -278,6 +357,8 @@ class StreamProbe:
         async for raw in self.process.stderr:
             line = raw.decode("utf-8", "replace").rstrip()
             if not line:
+                continue
+            if self._handle_progress_line(line):
                 continue
             if "showinfo" not in line and "ashowinfo" not in line and not line.startswith("[Parsed_") and not line.startswith("demuxer ->"):
                 self.stderr_tail.append(line)
@@ -369,7 +450,10 @@ class StreamProbe:
         self._reading_input_metadata = False
         self._video_stream_indices.clear()
         self._audio_stream_indices.clear()
+        self._framecrc_media_types.clear()
         self._packet_bytes.clear()
+        self._measurement_first_packet_mono = None
+        self._progress_pending.clear()
         self._process_stats = None
         self.process_cpu = 0.0
         self.process_rss = 0
@@ -402,9 +486,6 @@ class StreamProbe:
                 audio_age = now - (self.last_audio_frame_mono or self.started_mono)
                 if audio_age > stall:
                     self._event_throttled("AUDIO_MISSING", "WARNING", {"last_audio_age_seconds": round(audio_age, 2)}, 15)
-            if self._packet_bytes:
-                window = max(min(now - self._packet_bytes[0][0], 10), 1)
-                self.stream_metadata["bitrate_estimate_bps"] = round(sum(size for _, size in self._packet_bytes) * 8 / window, 0)
             if max(progress_age, media_age) > max(self.config.monitoring.dead_threshold, stall) and self.is_running:
                 self._event("FFMPEG_DEAD", "CRITICAL", {"progress_age_seconds": round(progress_age, 2), "media_age_seconds": round(media_age, 2)})
                 self.last_restart_reason = "FFmpeg produced no progress or media for the dead threshold"
@@ -440,9 +521,14 @@ class StreamProbe:
             self.process_rss = 0
 
     def _snapshot(self, now: float) -> dict[str, Any]:
+        bitrate_metrics = self._received_media_bitrate_metrics(now)
+        if bitrate_metrics["received_media_bitrate_quality"] == "MEASURED":
+            # Preserve the old LIGHT key as an alias during the v1-to-v2 transition.
+            bitrate_metrics["bitrate_estimate_bps"] = bitrate_metrics["received_media_bitrate_bps"]
         last_media = self.last_frame_mono if self.config.agent.profile == "DEEP" else (self.last_video_packet_mono if self._video_stream_indices else self.last_packet_mono)
         metrics = {
             **self.stream_metadata,
+            **bitrate_metrics,
             "profile": self.config.agent.profile,
             "ffmpeg_running": self.is_running,
             "last_frame_age": round(max(0.0, now - last_media), 3) if last_media is not None else None,

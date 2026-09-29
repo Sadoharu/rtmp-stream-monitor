@@ -1,0 +1,55 @@
+volumes:
+  central-data:
+  central-logs:
+
+secrets:
+  openai_api_key:
+    file: ./secrets/openai_api_key
+
+services:
+  central:
+    image: ${RTMP_MONITOR_IMAGE:-ghcr.io/sadoharu/rtmp-stream-monitor:0.1.0}
+    pull_policy: missing
+    build:
+      context: .
+      dockerfile: Dockerfile
+    init: true
+    restart: unless-stopped
+    user: "${RTMP_MONITOR_UID:-10001}:${RTMP_MONITOR_GID:-10001}"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    ports:
+      - "${RTMP_MONITOR_BIND_HOST:-0.0.0.0}:${RTMP_MONITOR_PORT:-8090}:8090"
+    volumes:
+      - ./config/central.docker.yaml:/etc/rtmp-monitor/central.yaml:ro
+      - central-data:/data
+      - ${RTMP_MONITOR_LEGACY_DATA_DIR:-./data}:/migration-data:ro
+      - central-logs:/logs
+      - ${RTMP_MONITOR_LEGACY_LOG_DIR:-./logs}:/migration-logs:ro
+      - ./backups:/backups
+    secrets:
+      - source: openai_api_key
+        target: openai_api_key
+    environment:
+      RTMP_MONITOR_CONFIG: /etc/rtmp-monitor/central.yaml
+      RTMP_MONITOR_DATABASE_URL: sqlite:////data/central.db
+      RTMP_MONITOR_ADMIN_TOKEN_FILE: /data/admin.token
+      OPENAI_API_KEY_FILE: /run/secrets/openai_api_key
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-6-luna}
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/healthz', timeout=3)"
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    stop_grace_period: 20s

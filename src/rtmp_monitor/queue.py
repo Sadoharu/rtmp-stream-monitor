@@ -161,8 +161,13 @@ class LocalQueue:
 
 def _is_corruption(error: sqlite3.DatabaseError) -> bool:
     error_code = getattr(error, "sqlite_errorcode", None)
-    corrupt_codes = {sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB}
-    if error_code is not None:
+    corrupt_codes = {
+        code for code in (
+            getattr(sqlite3, "SQLITE_CORRUPT", None),
+            getattr(sqlite3, "SQLITE_NOTADB", None),
+        ) if isinstance(code, int)
+    }
+    if error_code is not None and corrupt_codes:
         return (error_code & 0xFF) in corrupt_codes
     message = str(error).lower()
     return "database disk image is malformed" in message or "file is not a database" in message

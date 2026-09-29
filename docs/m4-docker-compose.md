@@ -1,0 +1,30 @@
+# M4 — центральний сервер у Docker Compose
+
+**Статус: Docker Desktop smoke з import у named volumes і запуском central пройшов; workflow публікації GHCR підготовлений, але ще не запускався для release tag. Міграція та rollback на цільовому Ubuntu-сервері ще потрібні.** Systemd-інсталятор збережено як альтернативу та шлях rollback.
+
+## Реалізовано
+
+- `Dockerfile` збирає Python 3.12 образ із production-залежностями; процес працює не від root.
+- `docker-compose.yml` використовує версійний образ `ghcr.io/sadoharu/rtmp-stream-monitor` з локальною збіркою як fallback; SQLite/admin token зберігаються у `central-data`, application logs — у `central-logs` named volumes. OpenAI key монтується з Compose secret; runtime-контейнер read-only, з обмеженням capabilities, `no-new-privileges` і `/tmp` tmpfs.
+- `.github/workflows/release-central-image.yml` збирає образ на pull request без публікації та публікує теги `X.Y.Z`, `X.Y` і `latest` у GHCR після push відповідного `vX.Y.Z`, лише якщо тег збігається з `pyproject.toml`. Workflow доданий локально; його запуск, доступність образу для anonymous pull і видимість GHCR package ще не підтверджені.
+- `docker-setup.sh` запитує порт, створює приватний secret file, спершу пробує завантажити налаштований образ і за його відсутності збирає з checkout, імпортує старі `data/` і `logs/` у порожні volumes, чекає HTTP healthcheck і виводить admin token. Якщо `.env` містить старий `OPENAI_API_KEY`, setup переносить його у secret і прибирає зі звичайного env-файлу. `--prepare-only` готує `.env`, каталоги та secret file для міграції, не запускаючи сервіс.
+- `rtmp_monitor.docker_migration` робить SQLite online backup замість копіювання DB-файлу; він перевіряє `integrity_check`, кількість рядків кожної таблиці, відповідність DB/admin-token пари та відмовляється працювати з частково імпортованим volume. Імпорт і копіювання логів ідемпотентні. Для створення snapshot до запуску Compose ця ж команда працює з system Python: `PYTHONPATH=src python3 -m rtmp_monitor.docker_migration --snapshot-source ... --snapshot-target ...`.
+- `scripts/docker-backup.sh` робить транзакційний SQLite snapshot через `Connection.backup()`, перевіряє `PRAGMA integrity_check` і пакує його разом з admin token у приватний `.tar.gz` bundle.
+- `scripts/docker-restore.sh` перевіряє точний список archive entries і SQLite цілісність до зупинки сервісу, зберігає поточну базу перед заміною, відновлює DB разом із відповідним admin token у named volume і запускає central.
+- README містить оновлення, reverse proxy/firewall примітки, migration кроки з systemd та rollback кроки. Старі `/var/lib/rtmp-monitor` DB/token лишаються на диску під час міграції.
+
+## Перевірки, виконані тут
+
+- Після додавання GHCR image reference і fallback виконано `docker compose config -q`; Git Bash перевірив синтаксис setup/backup/restore shell scripts через `bash -n`. Це перевіряє локальну Compose-конфігурацію та shell syntax, але не запускає новий GitHub release workflow.
+- `docker compose config -q`, збірка образу та `bash -n` усіх setup/backup/restore scripts пройшли.
+- На Docker Desktop виконано `docker-setup.sh` із тестовою SQLite базою, імпорт у named volume, healthcheck, restart зі збереженням stream, backup bundle з перевіркою `PRAGMA integrity_check`, а також фактичний запуск `docker-restore.sh` із видаленням тестової мутації та успішним healthcheck.
+- У першому restore smoke знайшовся SQLite `-shm` файл у staging; cleanup змінено на прибирання всього staging-каталогу й restore пройшов повторно.
+- `tests/test_docker_migration.py` перевіряє snapshot з не checkpoint-нутим WAL (з відкритою SQLite writer connection), збереження stream/incident/token/log, повторний запуск без перезапису, відмову від відсутнього token, partial volume та незавершеного import marker.
+- Після переходу на SQLite online snapshot змінений образ зібрано, `docker compose config -q`, Git Bash `bash -n` і повний Python test suite пройшли; migration CLI успішно виконався всередині образу. `docker-init-volumes.sh` запущено з окремим Compose project і новими named volumes: test streams, incident, admin token та legacy log імпортовано й звірено всередині volume. Central запущено від сервісного UID `10001`; healthcheck перейшов у `healthy`.
+- Цей smoke виявив, що Git Bash на Windows повертає `id -u`/`id -g`, відмінні від fallback UID/GID Compose (`10001`), і volume ставав недоступним для процесу сервісу. Initializer тепер використовує ті самі `10001` як fallback, що й Compose, а явні значення з `.env` лишаються пріоритетними. Повторний import виправленого volume підтвердив власника `10001`, цілісність та доступність DB на запис для агента.
+
+Це ще не підтверджує доступність порту з Ubuntu-хоста, права named volumes на конкретному сервері, backup/restore реальних incident даних, міграцію з його systemd SQLite або rollback старої production версії. Перед заміною systemd зробіть окрему перевірену копію `/var/lib/rtmp-monitor`, виконайте перенесення у вікно обслуговування і звірте кількість streams, probes та incidents у панелі.
+
+## Використання
+
+Запуск: `./docker-setup.sh`. Backup: `./scripts/docker-backup.sh`. Restore: `./scripts/docker-restore.sh /absolute/path/to/backup.tar.gz`. Версію образу задає `RTMP_MONITOR_IMAGE` у `.env`; після зміни версії запустіть setup. Named volumes залишаються між оновленнями. Файли старої системи у `data/` і `logs/` setup імпортує лише тоді, коли відповідні volumes порожні. GHCR образ і його доступність потрібно перевірити після першого release tag; production migration/rollback на цільовому Ubuntu хості лишається відкритим пунктом M4.

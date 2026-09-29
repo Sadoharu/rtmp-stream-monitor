@@ -336,7 +336,7 @@ def _timeline_context(session: Session, stream_id: str, opened_at: datetime, now
 
 
 def _context_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
-    keys = {"ffmpeg_running", "last_frame_age", "last_audio_frame_age", "frames", "packets", "keyframes", "i_frames", "i_frames_without_key_flag", "last_frame_type", "last_frame_is_keyframe", "last_keyframe_age", "current_gop_duration", "current_gop_frames", "expected_gop_frames", "expected_gop_seconds", "last_media_pts", "last_media_dts", "decode_errors", "reconnect_count", "fps", "source_fps", "resolution", "video_codec", "audio_codec", "bitrate", "clock", "network", "ingress_quality", "srs_api_available", "ingress_active", "last_ingress_progress_age", "ingress_recv_kbps_30s", "ingress_recv_bytes", "ingress_video_frames", "ingress_audio_frames", "ingress_frames"}
+    keys = {"ffmpeg_running", "last_frame_age", "last_audio_frame_age", "frames", "packets", "keyframes", "i_frames", "i_frames_without_key_flag", "last_frame_type", "last_frame_is_keyframe", "last_keyframe_age", "current_gop_duration", "current_gop_frames", "expected_gop_frames", "expected_gop_seconds", "last_media_pts", "last_media_dts", "decode_errors", "reconnect_count", "fps", "source_fps", "resolution", "video_codec", "audio_codec", "bitrate", "received_media_bitrate_bps", "received_media_bitrate_quality", "measurement_window_seconds", "received_media_packet_count", "clock", "network", "ingress_quality", "srs_api_available", "ingress_active", "last_ingress_progress_age", "ingress_recv_kbps_30s", "ingress_recv_bytes", "ingress_video_frames", "ingress_audio_frames", "ingress_frames"}
     return {key: metrics[key] for key in keys if key in metrics}
 
 
@@ -448,7 +448,7 @@ def _aggregate_old_telemetry(session: Session, raw_cutoff: datetime) -> None:
         sample_count = 0
         rank = 0
         status = "OK"
-        numeric: dict[str, dict[str, float]] = {}
+        numeric: dict[str, dict[str, Any]] = {}
         event_counts: dict[str, int] = {}
 
         def flush_bucket() -> None:
@@ -456,7 +456,9 @@ def _aggregate_old_telemetry(session: Session, raw_cutoff: datetime) -> None:
             if bucket is None or sample_count == 0:
                 return
             measures = {key: {"avg": round(value["sum"] / value["count"], 4), "min": round(value["min"], 4),
-                              "max": round(value["max"], 4), "last": round(value["last"], 4)} for key, value in numeric.items()}
+                              "max": round(value["max"], 4), "last": round(value["last"], 4),
+                              "count": int(value["count"]), "last_observed_at": value["last_observed_at"]}
+                        for key, value in numeric.items()}
             session.add(MetricAggregate(agent_id=agent.id, bucket_start=bucket, stream_id=agent.stream_id,
                                         bucket_seconds=60, sample_count=sample_count, status=status,
                                         metrics=measures, event_counts=dict(event_counts)))
@@ -475,12 +477,14 @@ def _aggregate_old_telemetry(session: Session, raw_cutoff: datetime) -> None:
             if current_rank >= rank:
                 rank, status = current_rank, item.status.upper()
             for key, value in _flatten_numeric(item.metrics or {}).items():
-                measure = numeric.setdefault(key, {"sum": 0.0, "count": 0.0, "min": value, "max": value, "last": value})
+                measure = numeric.setdefault(key, {"sum": 0.0, "count": 0.0, "min": value, "max": value, "last": value,
+                                                   "last_observed_at": observed.isoformat()})
                 measure["sum"] += value
                 measure["count"] += 1
                 measure["min"] = min(measure["min"], value)
                 measure["max"] = max(measure["max"], value)
                 measure["last"] = value
+                measure["last_observed_at"] = observed.isoformat()
             for event in item.events or []:
                 code = event.get("code")
                 if code:

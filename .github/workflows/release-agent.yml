@@ -1,0 +1,128 @@
+name: Publish agent packages
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  ubuntu-agent:
+    name: Build Ubuntu 22.04 agent package
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.10"
+      - name: Build Debian package and checksum
+        run: bash scripts/build-agent-deb.sh "$RUNNER_TEMP/dist"
+      - name: Verify bundled wheels install without PyPI
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(sed -n 's/^version *= *"\([^"]*\)"$/\1/p' pyproject.toml | head -n1)"
+          package="$RUNNER_TEMP/dist/rtmp-monitor-agent_${package_version}_amd64.deb"
+          extracted="$RUNNER_TEMP/agent-deb"
+          venv="$RUNNER_TEMP/agent-offline-venv"
+          dpkg-deb -f "$package" Package Version Architecture Depends
+          dpkg-deb -x "$package" "$extracted"
+          wheelhouse="$extracted/usr/share/rtmp-monitor-agent/wheelhouse"
+          python -m venv "$venv"
+          "$venv/bin/pip" install --no-index --find-links "$wheelhouse" --upgrade pip setuptools wheel
+          mapfile -t app_wheels < <(find "$wheelhouse" -maxdepth 1 -name 'rtmp_stream_monitor-*.whl' -print)
+          if [[ ${#app_wheels[@]} -ne 1 ]]; then
+            echo "Expected one app wheel in the Debian package." >&2
+            exit 1
+          fi
+          "$venv/bin/pip" install --no-index --find-links "$wheelhouse" "${app_wheels[0]}"
+          "$venv/bin/python" -c 'import fastapi, psutil, rtmp_monitor, sqlalchemy, yaml'
+          "$venv/bin/rtmp-monitor" --help >/dev/null
+      - name: Prepare stable download name and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(sed -n 's/^version *= *"\([^"]*\)"$/\1/p' pyproject.toml | head -n1)"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [[ "$tag_version" != "$package_version" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match project version $package_version." >&2
+            exit 1
+          fi
+          cd "$RUNNER_TEMP/dist"
+          cp "rtmp-monitor-agent_${package_version}_amd64.deb" rtmp-monitor-agent_amd64.deb
+          sha256sum rtmp-monitor-agent_amd64.deb > rtmp-monitor-agent_amd64.deb.sha256
+          sha256sum --check rtmp-monitor-agent_amd64.deb.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-agent-package
+          path: ${{ runner.temp }}/dist/*
+          if-no-files-found: error
+
+  windows-agent:
+    name: Build Windows agent bundle
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Build Windows bundle with private Python runtime
+        shell: powershell
+        run: .\scripts\build-windows-agent.ps1 -OutputDirectory "$env:RUNNER_TEMP\dist"
+      - name: Verify release version matches the tag
+        shell: powershell
+        run: |
+          $project = Get-Content -Raw pyproject.toml
+          $match = [regex]::Match($project, '(?m)^version\s*=\s*"([^"]+)"')
+          if (-not $match.Success) { throw 'Could not read app version from pyproject.toml.' }
+          $tagVersion = $env:GITHUB_REF_NAME -replace '^v', ''
+          if ($match.Groups[1].Value -ne $tagVersion) { throw "Tag $env:GITHUB_REF_NAME does not match app version $($match.Groups[1].Value)." }
+      - name: Verify Windows package checksum
+        shell: powershell
+        run: |
+          $archive = "$env:RUNNER_TEMP\dist\rtmp-monitor-agent-windows.zip"
+          $expected = ((Get-Content -Raw ($archive + '.sha256')).Trim() -split '\s+')[0].ToLowerInvariant()
+          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($expected -notmatch '^[0-9a-f]{64}$' -or $actual -ne $expected) { throw 'Windows package checksum validation failed.' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-agent-package
+          path: |
+            ${{ runner.temp }}/dist/rtmp-monitor-agent-windows.zip
+            ${{ runner.temp }}/dist/rtmp-monitor-agent-windows.zip.sha256
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish Ubuntu and Windows packages
+    runs-on: ubuntu-latest
+    needs: [ubuntu-agent, windows-agent]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref_name }}
+      - name: Verify release version matches the tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(sed -n 's/^version *= *"\([^"]*\)"$/\1/p' pyproject.toml | head -n1)"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [[ "$tag_version" != "$package_version" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match project version $package_version." >&2
+            exit 1
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*-agent-package'
+          path: ${{ runner.temp }}/release-assets
+          merge-multiple: true
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes "$RUNNER_TEMP"/release-assets/*

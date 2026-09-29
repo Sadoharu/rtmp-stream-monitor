@@ -1,0 +1,12 @@
+database_url: sqlite:////data/central.db
+bind_host: 0.0.0.0
+bind_port: 8090
+admin_token_file: /data/admin.token
+logs_dir: /logs
+agent_offline_seconds: 20
+stream_offline_seconds: 15
+media_timestamp_tolerance_seconds: 5
+raw_retention_days: 7
+aggregated_retention_days: 90
+incident_retention_days: 180
+log_retention_days: 30
