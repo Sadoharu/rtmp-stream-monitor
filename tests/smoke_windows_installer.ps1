@@ -71,7 +71,7 @@ log_dir: '$logDirYaml'
 "@
     Set-Content -LiteralPath $configPath -Value $testConfig -Encoding utf8
 
-    $installerOutput = (& .\install.ps1 -ConfigPath $configPath 2>&1 | Out-String)
+    $installerOutput = (& .\install.ps1 -ConfigPath $configPath *>&1 | Out-String)
     if ($LASTEXITCODE -ne 0) { throw 'The production install.ps1 returned a failure exit code.' }
     Write-Host $installerOutput
     if ($installerOutput -notmatch [regex]::Escape("Using Python $pythonVersion at $pythonExe")) {
