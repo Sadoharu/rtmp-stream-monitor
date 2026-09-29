@@ -127,6 +127,8 @@ After tightening the diagnosis to require contemporaneous `LIGHT` samples, a new
 
 At 20% loss, the product did not emit an explicit network-path diagnosis: the timeline only contained `PTS_REGRESSION` / `AV_TIMESTAMP_DRIFT` around recovery. Those events are not attributed to the injected loss. The test therefore confirms the network-layer fault and recovery at both rates, but the product only localized the severe 50% scenario through correlated media PTS lag. It did not measure or report the actual packet-loss rate. Windows host-wide TCP counters still cannot associate retransmits with a particular RTMP flow; independent client/server observation sites and a production-grade per-flow signal remain necessary for precise localization.
 
+One further 20% run after adding the contemporaneous-sample gate recorded 211 qdisc drops, nine positive `SERVER_EGRESS` buckets averaging `1.005 Mbps`, and a `5.731 s` PTS lag; the app emitted an `UNCONFIRMED` `NETWORK_PATH_PROBLEM` before recovery. Both clients stayed connected and published fresh measured telemetry after the fault. Earlier 20% runs did not localize the issue, so the diagnosis remains dependent on the observed media lag and has not yet been proven consistent at this loss level.
+
 Reproduce with:
 
 ```powershell
