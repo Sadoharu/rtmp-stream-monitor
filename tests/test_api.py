@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from rtmp_monitor.api import create_app
 from rtmp_monitor.config import CentralFileConfig
-from rtmp_monitor.db import Telemetry
+from rtmp_monitor.db import Incident, Stream, Telemetry
 
 
 def test_authenticated_ingest_is_idempotent_and_correlated(tmp_path):
@@ -48,6 +48,116 @@ def test_authenticated_ingest_is_idempotent_and_correlated(tmp_path):
         assert incidents[0]["diagnosis"] == "NETWORK_PATH_PROBLEM"
         telemetry = client.get("/api/v1/telemetry?stream_id=demo", headers=headers).json()
         assert len(telemetry) == 1
+
+
+def test_incident_explanation_falls_back_to_evidence_without_openai_and_requires_admin(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    admin_file = tmp_path / "admin.token"
+    app = create_app(CentralFileConfig(
+        database_url=f"sqlite:///{(tmp_path / 'central.db').as_posix()}",
+        admin_token_file=admin_file,
+    ))
+    now = datetime.now(timezone.utc)
+    incident_id = "00000000-0000-0000-0000-000000000001"
+    with app.state.sessions() as session:
+        session.add(Stream(id="demo", name="demo"))
+        session.flush()
+        session.add(Incident(
+            id=incident_id, stream_id="demo", opened_at=now, updated_at=now, resolved_at=now,
+            severity="WARNING", diagnosis="CLIENT_PROBLEM", probable_location="CLIENT RECEIVE / DECODER",
+            affected_agents=["predator-private-name"], symptoms=[], active=False, fingerprint="test:client",
+            context={"timeline": [{
+                "timestamp": now.isoformat(), "agent": "predator-private-name", "role": "CLIENT",
+                "status": "WARNING", "metrics": {},
+                "events": [{"code": "FREEZE_START", "severity": "WARNING", "details": {}}],
+            }]},
+        ))
+        session.commit()
+
+    headers = {"Authorization": f"Bearer {admin_file.read_text(encoding='utf-8').strip()}"}
+    with TestClient(app) as client:
+        path = f"/api/v1/incidents/{incident_id}/explanation"
+        assert client.post(path).status_code == 401
+        response = client.post(path, headers=headers)
+        assert response.status_code == 200
+        explanation = response.json()
+        assert explanation["ai_status"] == "not_configured"
+        assert explanation["confidence"] == "low"
+        assert "Точну першопричину" in explanation["likely_cause"]
+        assert "predator-private-name" not in response.text
+
+
+def test_ai_incident_explanation_is_cached_until_incident_changes(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-secret")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-test")
+    admin_file = tmp_path / "admin.token"
+    app = create_app(CentralFileConfig(
+        database_url=f"sqlite:///{(tmp_path / 'central.db').as_posix()}",
+        admin_token_file=admin_file,
+    ))
+    now = datetime.now(timezone.utc)
+    incident_id = "00000000-0000-0000-0000-000000000002"
+    with app.state.sessions() as session:
+        session.add(Stream(id="demo", name="demo"))
+        session.flush()
+        session.add(Incident(
+            id=incident_id, stream_id="demo", opened_at=now, updated_at=now, resolved_at=now,
+            severity="WARNING", diagnosis="CLIENT_PROBLEM", probable_location="CLIENT RECEIVE / DECODER",
+            affected_agents=[], symptoms=[], active=False, fingerprint="test:client:ai", context={"timeline": []},
+        ))
+        session.commit()
+
+    calls = []
+    def fake_openai(packet, api_key, model):
+        calls.append((api_key, model))
+        return {"summary": "Пояснення", "likely_cause": "Причина", "confidence": "low",
+                "evidence_ids": [], "evidence": [], "other_possible_causes": [], "next_checks": [],
+                "ai_generated": True, "model": model}
+
+    monkeypatch.setattr("rtmp_monitor.api.openai_explanation", fake_openai)
+    headers = {"Authorization": f"Bearer {admin_file.read_text(encoding='utf-8').strip()}"}
+    with TestClient(app) as client:
+        path = f"/api/v1/incidents/{incident_id}/explanation"
+        first = client.post(path, headers=headers)
+        second = client.post(path, headers=headers)
+        assert first.status_code == second.status_code == 200
+        assert first.json()["ai_status"] == "generated"
+        assert second.json()["ai_status"] == "cached"
+        assert calls == [("sk-test-secret", "gpt-test")]
+
+
+def test_removing_probe_revokes_token_and_preserves_history(tmp_path):
+    admin_file = tmp_path / "admin.token"
+    app = create_app(CentralFileConfig(
+        database_url=f"sqlite:///{(tmp_path / 'central.db').as_posix()}",
+        admin_token_file=admin_file,
+    ))
+    headers = {"Authorization": f"Bearer {admin_file.read_text(encoding='utf-8').strip()}"}
+    with TestClient(app) as client:
+        client.post("/api/v1/streams", headers=headers, json={"id": "demo", "name": "demo"})
+        created = client.post("/api/v1/agents", headers=headers, json={
+            "name": "predator", "role": "CLIENT", "stream_id": "demo",
+        }).json()
+        sample = {"sample_id": "predator-freeze", "stream_id": "demo",
+                  "observed_at": datetime.now(timezone.utc).isoformat(), "status": "WARNING",
+                  "metrics": {}, "events": [{"code": "FREEZE_START", "severity": "WARNING", "details": {}}],
+                  "context": {}}
+        assert client.post("/api/v1/ingest", headers={"Authorization": f"Bearer {created['token']}"}, json={"items": [sample]}).status_code == 200
+        assert client.get("/api/v1/incidents?active=true", headers=headers).json()
+        removal = client.delete(f"/api/v1/agents/{created['id']}", headers=headers)
+        assert removal.status_code == 200
+        assert removal.json()["history_preserved"] is True
+        assert client.get("/api/v1/agents", headers=headers).json() == []
+        assert client.get("/api/v1/dashboard", headers=headers).json()["agents"] == []
+        assert client.get("/api/v1/incidents?active=true", headers=headers).json() == []
+        assert client.post("/api/v1/ingest", headers={"Authorization": f"Bearer {created['token']}"}, json={
+            "items": [{"stream_id": "demo", "observed_at": datetime.now(timezone.utc).isoformat()}],
+        }).status_code == 401
+        again = client.post("/api/v1/agents", headers=headers, json={
+            "name": "predator", "role": "CLIENT", "stream_id": "demo",
+        })
+        assert again.status_code == 201
+        assert again.json()["id"] == created["id"]
 
 
 def test_long_running_incident_stays_a_single_active_incident(tmp_path):

@@ -26,6 +26,12 @@ fi
 id -u rtmp-monitor >/dev/null 2>&1 || useradd --system --home-dir "$DATA_DIR" --create-home --shell /usr/sbin/nologin rtmp-monitor
 install -d -o rtmp-monitor -g rtmp-monitor "$APP" "$DATA_DIR" "$LOG_DIR"
 install -d -m 0755 "$CONF_DIR"
+if [[ ! -f "$CONF_DIR/openai.env" ]]; then
+  install -o root -g rtmp-monitor -m 0640 /dev/null "$CONF_DIR/openai.env"
+else
+  chown root:rtmp-monitor "$CONF_DIR/openai.env"
+  chmod 0640 "$CONF_DIR/openai.env"
+fi
 cp -a "$ROOT/src" "$ROOT/pyproject.toml" "$APP/"
 "$PYTHON_BIN" -m venv "$APP/.venv" || { echo "Could not create the Python virtual environment. Install python${PYTHON_VERSION}-venv and rerun." >&2; exit 1; }
 "$APP/.venv/bin/pip" install --upgrade pip
@@ -46,6 +52,7 @@ User=rtmp-monitor
 Group=rtmp-monitor
 WorkingDirectory=/var/lib/rtmp-monitor
 Environment=RTMP_MONITOR_CONFIG=/etc/rtmp-monitor/central.yaml
+EnvironmentFile=-/etc/rtmp-monitor/openai.env
 ExecStart=/opt/rtmp-monitor/.venv/bin/rtmp-monitor server --config /etc/rtmp-monitor/central.yaml
 Restart=on-failure
 RestartSec=5

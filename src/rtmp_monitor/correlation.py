@@ -205,7 +205,7 @@ def correlate_stream(session: Session, stream_id: str, now: datetime | None = No
     rows = session.execute(
         select(Telemetry, Agent)
         .join(Agent, Telemetry.agent_id == Agent.id)
-        .where(Telemetry.stream_id == stream_id, Telemetry.observed_at >= cutoff, Telemetry.observed_at <= now)
+        .where(Telemetry.stream_id == stream_id, Agent.enabled.is_(True), Telemetry.observed_at >= cutoff, Telemetry.observed_at <= now)
         .order_by(Telemetry.observed_at.desc())
     ).all()
     latest_by_agent: dict[str, tuple[Telemetry, Agent]] = {}

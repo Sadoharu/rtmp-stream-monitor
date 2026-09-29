@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import secrets
 import uuid
 from contextlib import asynccontextmanager
@@ -22,6 +23,7 @@ from . import __version__
 from .config import CentralFileConfig
 from .correlation import correlate_stream, mark_offline_agents, run_retention
 from .db import Agent, Base, Incident, Stream, Telemetry, make_engine, make_session_factory, utcnow
+from .explanations import build_evidence_packet, deterministic_explanation, openai_explanation
 
 LOG = logging.getLogger("rtmp_monitor.api")
 
@@ -171,6 +173,8 @@ def create_app(config: CentralFileConfig | None = None, database_url: str | None
     app.state.sessions = sessions
     app.state.admin_token = admin_token
     app.state.central_config = config
+    app.state.openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    app.state.openai_model = os.getenv("OPENAI_MODEL", "gpt-6-luna").strip() or "gpt-6-luna"
 
     def get_session():
         with sessions() as session:
@@ -219,7 +223,7 @@ def create_app(config: CentralFileConfig | None = None, database_url: str | None
     @app.get("/api/v1/agents")
     def list_agents(_admin: bool = Depends(require_admin), session: Session = Depends(get_session)):
         now = utcnow()
-        agents = session.scalars(select(Agent).order_by(Agent.name)).all()
+        agents = session.scalars(select(Agent).where(Agent.enabled.is_(True)).order_by(Agent.name)).all()
         latest = {item.id: session.scalar(select(Telemetry).where(Telemetry.agent_id == item.id).order_by(Telemetry.observed_at.desc()).limit(1)) for item in agents}
         return [_agent_data(item, now, config.agent_offline_seconds, config.stream_offline_seconds, latest.get(item.id)) for item in agents]
 
@@ -227,13 +231,23 @@ def create_app(config: CentralFileConfig | None = None, database_url: str | None
     def create_agent(data: AgentCreate, _admin: bool = Depends(require_admin), session: Session = Depends(get_session)):
         if not session.get(Stream, data.stream_id):
             raise HTTPException(status_code=404, detail="Stream not found")
-        if session.scalar(select(Agent).where(Agent.name == data.name)):
+        existing = session.scalar(select(Agent).where(Agent.name == data.name))
+        if existing and existing.enabled:
             raise HTTPException(status_code=409, detail="Agent name already exists")
         token = secrets.token_urlsafe(36)
-        agent = Agent(
-            id=str(uuid.uuid4()), name=data.name, location=data.location, platform=data.platform,
-            role=data.role, stream_id=data.stream_id, token_hash=_token_hash(token),
-        )
+        if existing:
+            agent = existing
+            agent.location = data.location
+            agent.platform = data.platform
+            agent.role = data.role
+            agent.stream_id = data.stream_id
+            agent.token_hash = _token_hash(token)
+            agent.enabled = True
+        else:
+            agent = Agent(
+                id=str(uuid.uuid4()), name=data.name, location=data.location, platform=data.platform,
+                role=data.role, stream_id=data.stream_id, token_hash=_token_hash(token),
+            )
         session.add(agent)
         session.commit()
         return {"id": agent.id, "name": agent.name, "token": token, "role": agent.role, "stream_id": agent.stream_id}
@@ -247,6 +261,22 @@ def create_app(config: CentralFileConfig | None = None, database_url: str | None
         agent.token_hash = _token_hash(token)
         session.commit()
         return {"id": agent.id, "token": token}
+
+    @app.delete("/api/v1/agents/{agent_id}")
+    def disable_agent(agent_id: str, _admin: bool = Depends(require_admin), session: Session = Depends(get_session)):
+        agent = session.get(Agent, agent_id)
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        agent.enabled = False
+        offline = session.scalar(select(Incident).where(
+            Incident.fingerprint == f"agent:{agent.id}:offline", Incident.active.is_(True)
+        ))
+        if offline:
+            offline.active = False
+            offline.resolved_at = utcnow()
+        correlate_stream(session, agent.stream_id)
+        session.commit()
+        return {"id": agent.id, "enabled": False, "history_preserved": True}
 
     @app.post("/api/v1/ingest")
     def ingest(batch: IngestBatch, request: Request, agent: Agent = Depends(require_agent), session: Session = Depends(get_session)):
@@ -310,7 +340,7 @@ def create_app(config: CentralFileConfig | None = None, database_url: str | None
         streams = session.scalars(select(Stream).order_by(Stream.name)).all()
         if stream_id and not session.get(Stream, stream_id):
             raise HTTPException(status_code=404, detail="Stream not found")
-        agents_query = select(Agent).order_by(Agent.name)
+        agents_query = select(Agent).where(Agent.enabled.is_(True)).order_by(Agent.name)
         if stream_id:
             agents_query = agents_query.where(Agent.stream_id == stream_id)
         agents = session.scalars(agents_query).all()
@@ -324,6 +354,7 @@ def create_app(config: CentralFileConfig | None = None, database_url: str | None
             "streams": [{"id": stream.id, "name": stream.name, "local_url": stream.local_url, "public_url": stream.public_url, "source_url": stream.source_url} for stream in streams],
             "agents": [_agent_data(item, now, config.agent_offline_seconds, config.stream_offline_seconds, latest.get(item.id)) for item in agents],
             "incidents": [_incident_dict(item) for item in incidents],
+            "openai_explanations_available": bool(app.state.openai_api_key),
             "thresholds": {"agent_offline_seconds": config.agent_offline_seconds, "stream_offline_seconds": config.stream_offline_seconds},
             "clock_warning": _clock_warning([(agent.name, latest[agent.id].metrics) for agent in agents if latest.get(agent.id)], config.clock_offset_warning_ms),
         }
@@ -336,6 +367,53 @@ def create_app(config: CentralFileConfig | None = None, database_url: str | None
         if stream_id:
             query = query.where(Incident.stream_id == stream_id)
         return [_incident_dict(item) for item in session.scalars(query).all()]
+
+    @app.post("/api/v1/incidents/{incident_id}/explanation")
+    def explain_incident(incident_id: str, _admin: bool = Depends(require_admin), session: Session = Depends(get_session)):
+        incident = session.get(Incident, incident_id)
+        if incident is None:
+            raise HTTPException(status_code=404, detail="Incident not found")
+        updated_at = _datetime(incident.updated_at).isoformat()
+        context = incident.context if isinstance(incident.context, dict) else {}
+        cached = context.get("explanation_cache")
+        if (
+            app.state.openai_api_key
+            and isinstance(cached, dict)
+            and cached.get("updated_at") == updated_at
+            and cached.get("model") == app.state.openai_model
+        ):
+            return {**cached["result"], "ai_status": "cached"}
+
+        opened = _datetime(incident.opened_at)
+        related_query = select(Incident).where(
+            Incident.stream_id == incident.stream_id,
+            Incident.id != incident.id,
+            Incident.opened_at >= opened - timedelta(minutes=10),
+            Incident.opened_at <= opened + timedelta(minutes=10),
+        ).order_by(Incident.opened_at.asc()).limit(100)
+        related = session.scalars(related_query).all()
+        packet = build_evidence_packet(incident, related)
+        result = deterministic_explanation(packet)
+        result["evidence"] = packet["evidence"]
+        status = "not_configured"
+        if app.state.openai_api_key:
+            try:
+                result = openai_explanation(packet, app.state.openai_api_key, app.state.openai_model)
+                status = "generated"
+                incident.context = {
+                    **context,
+                    "explanation_cache": {
+                        "updated_at": updated_at,
+                        "model": app.state.openai_model,
+                        "result": result,
+                    },
+                }
+                session.commit()
+            except RuntimeError as exc:
+                LOG.warning("OpenAI incident explanation unavailable: %s", exc)
+                status = "unavailable"
+        result["ai_status"] = status
+        return result
 
     @app.get("/api/v1/telemetry")
     def telemetry(stream_id: str, hours: int = Query(default=24, ge=1, le=168), _admin: bool = Depends(require_admin), session: Session = Depends(get_session)):
