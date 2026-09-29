@@ -102,8 +102,9 @@ log_dir: '$logDirYaml'
         if (-not (Test-Path -LiteralPath (Join-Path $programDir 'runtime\pythonservice.exe'))) {
             throw 'The installer did not place pywin32 service host beside the private Python runtime.'
         }
-        $runtimeImport = & $cleanupPythonExe -c 'import rtmp_monitor, win32event, win32serviceutil; print("Bundled agent imports OK")'
-        if ($LASTEXITCODE -ne 0) { throw "The installed private runtime cannot import the service dependencies: $runtimeImport" }
+        $runtimeImportOutput = (& $cleanupPythonExe -c 'import rtmp_monitor, win32event, win32serviceutil' 2>&1 | Out-String)
+        if ($LASTEXITCODE -ne 0) { throw "The installed private runtime cannot import the service dependencies: $runtimeImportOutput" }
+        Write-Host 'Bundled agent imports OK.'
     } elseif ($installerOutput -notmatch [regex]::Escape("Using Python $pythonVersion at $pythonExe")) {
         throw "Production install.ps1 did not use the auto-discovered machine-wide Python $pythonExe."
     }

@@ -113,8 +113,9 @@ try {
     Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\windows-python.ps1') -Destination (Join-Path $bundleRoot 'scripts')
 
     $embeddedPython = Join-Path $runtimeDirectory 'python.exe'
-    & $embeddedPython -c 'import sys; print("Embedded sys.path:", repr(sys.path)); import fastapi, psutil, rtmp_monitor, win32event, win32serviceutil, yaml; print("Embedded agent runtime imports OK")'
+    & $embeddedPython -c 'import fastapi, psutil, rtmp_monitor, win32event, win32serviceutil, yaml'
     if ($LASTEXITCODE -ne 0) { throw 'The embedded runtime failed its import smoke check.' }
+    Write-Host 'Embedded agent runtime imports OK.'
 
     $manifest = [ordered]@{
         app_version = [regex]::Match((Get-Content -Raw (Join-Path $repoRoot 'pyproject.toml')), '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
