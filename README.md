@@ -96,7 +96,7 @@ sudo journalctl -u rtmp-monitor-agent -f
 1. Створіть probe у Dashboard і скопіюйте його YAML у `config/agent.yaml` (або передайте інший шлях у параметрі `-ConfigPath`).
 2. Встановіть Python 3.12+ x64 **для всіх користувачів** (у звичайному інсталяторі Python виберіть `Install for all users`). Windows-служба запускається від `LocalSystem`, тому Python із профілю `C:\Users\...` їй недоступний. Інсталятор автоматично шукає машинну інсталяцію в реєстрі Windows та `C:\Program Files`, незалежно від того, який Python обирає `py -3`. Якщо Python розташований в іншій машинно-доступній папці поза профілем користувача, передайте його повний шлях через `-PythonPath`; шлях під `C:\Users\...` буде відхилено. Служба використовує вибраний машинний Python без virtualenv, як рекомендує [pywin32 для Windows Services](https://github.com/mhammond/pywin32#running-as-a-windows-service). FFmpeg також має бути встановлений поза профілем користувача; інсталятор записує абсолютні шляхи `ffmpeg.exe` і `ffprobe.exe` у захищений конфіг, щоб служба знайшла їх під `LocalSystem`. Наприклад: `winget install --id Gyan.FFmpeg --scope machine`.
 
-   `py -3.13` може й надалі показувати Python із профілю користувача навіть за наявності окремої машинної інсталяції. Перевірте список інтерпретаторів і машинні шляхи в PowerShell:
+   Python Launcher `py` навмисно надає перевагу per-user інсталяції перед system-wide, тому `py -3.13` може показувати шлях з `AppData`, навіть якщо окрема машинна копія Python також встановлена ([документація Python Launcher](https://docs.python.org/3/using/windows.html#python-launcher-for-windows)). Це не доводить, що системної копії немає. Перевірте інтерпретатори та машинні шляхи в PowerShell:
 
    ```powershell
    py -0p
