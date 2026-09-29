@@ -224,7 +224,7 @@ def correlate_stream(session: Session, stream_id: str, now: datetime | None = No
     active = session.scalars(select(Incident).where(Incident.stream_id == stream_id, Incident.active.is_(True))).all()
     if result is None:
         for incident in active:
-            if incident.diagnosis != "AGENT_OFFLINE":
+            if incident.diagnosis != "AGENT_OFFLINE" and _as_aware(incident.opened_at) <= _as_aware(now):
                 incident.active = False
                 incident.resolved_at = now
         _refresh_recent_resolved_contexts(session, stream_id, now)
@@ -232,12 +232,20 @@ def correlate_stream(session: Session, stream_id: str, now: datetime | None = No
 
     fingerprint = f"stream:{stream_id}:{result['diagnosis']}"
     existing = session.scalar(select(Incident).where(Incident.fingerprint == fingerprint, Incident.active.is_(True)).order_by(Incident.opened_at.desc()))
+    if existing and _as_aware(now) < _as_aware(existing.updated_at):
+        # Delayed/out-of-order samples can be replayed from the agent outbox.
+        # They must not move a current active incident's timestamps or context back.
+        return existing
     for incident in active:
-        if incident.fingerprint != fingerprint and incident.diagnosis != "AGENT_OFFLINE":
+        if (
+            incident.fingerprint != fingerprint
+            and incident.diagnosis != "AGENT_OFFLINE"
+            and _as_aware(incident.opened_at) <= _as_aware(now)
+        ):
             incident.active = False
             incident.resolved_at = now
     _refresh_recent_resolved_contexts(session, stream_id, now)
-    if existing and (now - _as_aware(existing.updated_at)).total_seconds() <= 120:
+    if existing:
         incident = existing
         incident.updated_at = now
         incident.severity = result["severity"]

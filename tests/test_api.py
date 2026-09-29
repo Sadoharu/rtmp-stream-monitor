@@ -49,6 +49,87 @@ def test_authenticated_ingest_is_idempotent_and_correlated(tmp_path):
         assert len(telemetry) == 1
 
 
+def test_long_running_incident_stays_a_single_active_incident(tmp_path):
+    admin_file = tmp_path / "admin.token"
+    app = create_app(CentralFileConfig(
+        database_url=f"sqlite:///{(tmp_path / 'central.db').as_posix()}",
+        admin_token_file=admin_file,
+    ))
+    admin = admin_file.read_text(encoding="utf-8").strip()
+    first_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+    with TestClient(app) as client:
+        headers = {"Authorization": f"Bearer {admin}"}
+        client.post("/api/v1/streams", headers=headers, json={"id": "demo", "name": "demo"})
+        created_agent = client.post("/api/v1/agents", headers=headers, json={
+            "name": "client", "location": "studio", "platform": "Windows",
+            "role": "CLIENT", "stream_id": "demo",
+        })
+        agent_headers = {"Authorization": f"Bearer {created_agent.json()['token']}"}
+        for sample_id, observed_at in (
+            ("freeze-start", first_at),
+            ("freeze-still-active", first_at + timedelta(minutes=3)),
+        ):
+            response = client.post("/api/v1/ingest", headers=agent_headers, json={"items": [{
+                "sample_id": sample_id,
+                "stream_id": "demo",
+                "observed_at": observed_at.isoformat(),
+                "status": "WARNING",
+                "metrics": {},
+                "events": [{"code": "FREEZE_START", "severity": "WARNING", "details": {}}],
+                "context": {},
+            }]})
+            assert response.status_code == 200
+
+        incidents = client.get("/api/v1/incidents?active=true", headers=headers).json()
+
+    assert len(incidents) == 1
+    assert incidents[0]["opened_at"] == first_at.isoformat()
+    assert incidents[0]["updated_at"] == (first_at + timedelta(minutes=3)).isoformat()
+
+
+def test_out_of_order_healthy_sample_does_not_resolve_newer_incident(tmp_path):
+    admin_file = tmp_path / "admin.token"
+    app = create_app(CentralFileConfig(
+        database_url=f"sqlite:///{(tmp_path / 'central.db').as_posix()}",
+        admin_token_file=admin_file,
+    ))
+    admin = admin_file.read_text(encoding="utf-8").strip()
+    opened_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    with TestClient(app) as client:
+        headers = {"Authorization": f"Bearer {admin}"}
+        client.post("/api/v1/streams", headers=headers, json={"id": "demo", "name": "demo"})
+        created_agent = client.post("/api/v1/agents", headers=headers, json={
+            "name": "client", "location": "studio", "platform": "Windows",
+            "role": "CLIENT", "stream_id": "demo",
+        })
+        agent_headers = {"Authorization": f"Bearer {created_agent.json()['token']}"}
+        broken = client.post("/api/v1/ingest", headers=agent_headers, json={"items": [{
+            "sample_id": "freeze-start",
+            "stream_id": "demo",
+            "observed_at": opened_at.isoformat(),
+            "status": "WARNING",
+            "metrics": {},
+            "events": [{"code": "FREEZE_START", "severity": "WARNING", "details": {}}],
+            "context": {},
+        }]})
+        assert broken.status_code == 200
+        stale_healthy = client.post("/api/v1/ingest", headers=agent_headers, json={"items": [{
+            "sample_id": "late-healthy",
+            "stream_id": "demo",
+            "observed_at": (opened_at - timedelta(seconds=10)).isoformat(),
+            "status": "OK",
+            "metrics": {},
+            "events": [],
+            "context": {},
+        }]})
+        assert stale_healthy.status_code == 200
+        incidents = client.get("/api/v1/incidents?active=true", headers=headers).json()
+
+    assert len(incidents) == 1
+    assert incidents[0]["active"] is True
+    assert incidents[0]["resolved_at"] is None
+
+
 def test_batch_correlates_transient_freeze_before_recovery(tmp_path):
     admin_file = tmp_path / "admin.token"
     app = create_app(CentralFileConfig(
