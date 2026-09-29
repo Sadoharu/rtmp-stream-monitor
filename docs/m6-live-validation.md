@@ -36,6 +36,10 @@ It reports per-profile status, measured bitrate, series bucket count, FFmpeg CPU
 
 After adding CPU/RSS and concise event output, a 12-second script verification returned 9 measured buckets per profile and no events. FFmpeg usage on this host was `LIGHT` 1.6% CPU / 20.9 MB RSS and `DEEP` 26.1% CPU / 178.5 MB RSS. These are one short sample on the development PC, not capacity guarantees.
 
+## Repeat live `poland` capture — 2026-09-30
+
+A further 30-second read-only run used the user-provided live RTMP source and two concurrent Windows `CLIENT` probes (`LIGHT` and `DEEP`) with network sampling enabled. Both reported `OK` with measured bitrate. The local collector's V2 series API returned 24 measured one-second buckets for `LIGHT` (mean/floor/peak `8.087/6.876/9.020 Mbps`) and 25 for `DEEP` (`8.364/7.289/12.304 Mbps`). Latest rolling samples were `7.316 Mbps` and `7.990 Mbps`. FFmpeg CPU/RSS were `0.0% / 21.5 MB` (`LIGHT`) and `23.4% / 183.4 MB` (`DEEP`). The API returned zero event rows during this interval, so this run confirms live series delivery but does not satisfy the active-event browser check or identify a cause for earlier client warnings. The probes and collector ran on one Windows host and shared its network; this is not an independent-site comparison.
+
 ## Controlled RTMP bitrate dip and freeze — 2026-09-29
 
 An isolated SRS 6 RTMP server ran in a temporary localhost-only Docker container on port `19350`. The reusable [publisher fixture](../scripts/publish-rtmp-fault-fixture.ps1) sent a 720p50 H.264/AAC stream and rendered the video black for six seconds while keeping the RTMP publish session active. Two Windows `CLIENT` probes (`LIGHT` and `DEEP`) and a temporary SQLite central collector ran concurrently for 35 seconds; the source and collector were removed after the smoke.
