@@ -196,7 +196,9 @@ class StreamProbe:
                     except ValueError:
                         pass
                     if progress.get("fps"):
-                        self.stream_metadata["fps"] = _number(progress["fps"])
+                        # FFmpeg progress reports output processing throughput, which can
+                        # exceed the stream's advertised/observed input frame rate.
+                        self.stream_metadata["decode_fps"] = _number(progress["fps"])
                     if progress.get("bitrate"):
                         self.stream_metadata["bitrate"] = progress["bitrate"]
                     if progress.get("out_time"):

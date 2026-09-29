@@ -91,6 +91,7 @@ def main() -> int:
             metrics = found["metrics"]
             print(f"Agent status: {found['status']}")
             print(f"Video codec/resolution: {metrics.get('video_codec')} / {metrics.get('resolution')}")
+            print(f"Input FPS (reported) / FFmpeg processing FPS: {metrics.get('source_fps')} / {metrics.get('decode_fps')}")
             print(f"Video frames or packets/keyframes: {metrics.get('frames') if args.profile == 'DEEP' else metrics.get('packets')} / {metrics.get('keyframes')}")
             print(f"PTS regressions/jumps: {metrics.get('pts_regressions')} / {metrics.get('pts_jumps')}")
             print(f"Latest events: {', '.join(event.get('code','') for event in found.get('events', [])) or 'none'}")

@@ -111,6 +111,30 @@ def test_stream_probe_uses_configured_executables_when_service_path_is_missing(t
     assert probe.command()[0] == str(ffprobe)
 
 
+def test_ffmpeg_progress_rate_is_not_reported_as_source_fps(tmp_path):
+    config = AgentFileConfig.model_validate({
+        "server": {"url": "http://central.example:8090"},
+        "agent": {"name": "client-test", "token": "test-token"},
+        "streams": [{"id": "poland", "url": "rtmp://server.example/live/poland"}],
+        "state_dir": str(tmp_path / "state"),
+        "log_dir": str(tmp_path / "logs"),
+    })
+    probe = StreamProbe(config.streams[0], config, LocalQueue(tmp_path / "queue.db", 1024 * 1024, 100))
+    probe.stream_metadata["source_fps"] = 50.0
+
+    class ProgressLines:
+        async def __aiter__(self):
+            for line in (b"frame=100\n", b"fps=79.48\n", b"progress=continue\n"):
+                yield line
+
+    probe.process = SimpleNamespace(stdout=ProgressLines())
+    asyncio.run(probe._read_stdout())
+
+    assert probe.stream_metadata["source_fps"] == 50.0
+    assert probe.stream_metadata["decode_fps"] == 79.48
+    assert "fps" not in probe.stream_metadata
+
+
 def test_connection_reset_clears_stale_timestamp_baselines(tmp_path):
     config = AgentFileConfig.model_validate({
         "server": {"url": "http://central.example:8090"},
