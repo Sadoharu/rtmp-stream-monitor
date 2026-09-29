@@ -260,6 +260,12 @@ def _episode_assessment(packet: dict[str, Any], episode: dict[str, Any]) -> dict
                 "Медіапомилка зафіксована на SOURCE / SERVER_INGRESS. Подальше поширення цього симптому не підтверджене наявними samples."
             )
         evidence_roles = {sample["role"] for sample in upstream_faults}
+        if matched:
+            downstream_faults = egress_faults + client_faults
+            evidence_roles.update(
+                sample["role"] for sample in downstream_faults
+                if any(event.get("code") in upstream_codes for event in sample.get("events", []))
+            )
     elif egress_faults:
         if ingress_clean and not clock_uncertain:
             key = "RTMP_SERVER_RESTREAM"
@@ -623,6 +629,8 @@ def openai_explanation(packet: dict[str, Any], api_key: str, model: str, timeout
         raise RuntimeError(f"OpenAI API returned HTTP {exc.code}") from None
     except OSError:
         raise RuntimeError("Could not reach the OpenAI API") from None
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise RuntimeError("OpenAI returned invalid response JSON") from None
     try:
         result = json.loads(_response_text(response_data))
     except (json.JSONDecodeError, TypeError, ValueError) as exc:

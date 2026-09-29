@@ -3,6 +3,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from rtmp_monitor import explanations
 
 
@@ -82,6 +84,8 @@ def test_repeated_incidents_are_reported_as_a_pattern():
     assert any("2 інциденти" in item["fact"] for item in packet["evidence"])
     assert "2 окремих інцидентах" in result["summary"]
     assert "не самостійний доказ першопричини" in result["likely_cause"]
+    assert result["cause_key"] == "INSUFFICIENT_EVIDENCE"
+    assert result["confidence"] == "low"
 
 
 def test_unsynchronized_probe_clock_is_an_evidence_caveat():
@@ -182,6 +186,12 @@ def test_matching_upstream_media_error_localizes_source_ingest():
 
     assert packet["causal_analysis"]["cause_key"] == "SOURCE_OR_INGEST"
     assert packet["causal_analysis"]["confidence"] == "medium"
+    role_by_probe = {sample["probe"]: sample["role"] for sample in packet["observations"]}
+    cited_roles = {
+        role_by_probe[item["probe"]] for item in packet["evidence"]
+        if item["id"] in packet["causal_analysis"]["evidence_ids"] and item.get("probe") in role_by_probe
+    }
+    assert {"SOURCE", "SERVER_EGRESS", "CLIENT"} <= cited_roles
 
 
 def test_unsynchronized_clocks_prevent_claim_that_upstream_error_propagated():
@@ -270,3 +280,22 @@ def test_openai_request_uses_store_false_and_sends_only_sanitized_evidence(monke
     assert result["evidence_ids"] == [packet["evidence"][0]["id"]]
     assert result["confidence"] == packet["causal_analysis"]["confidence"]
     assert result["ai_generated"] is True
+
+
+def test_invalid_openai_json_is_reported_as_explanation_unavailable(monkeypatch):
+    packet = explanations.build_evidence_packet(_incident(), [])
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b"not-json"
+
+    monkeypatch.setattr(explanations, "urlopen", lambda *_args, **_kwargs: FakeResponse())
+
+    with pytest.raises(RuntimeError, match="invalid response JSON"):
+        explanations.openai_explanation(packet, "sk-secret", "gpt-test")
