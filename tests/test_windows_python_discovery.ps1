@@ -26,6 +26,24 @@ try {
     }
     Write-Host "Program Files discovery: Python $($programFilesPython.Version) at $($programFilesPython.Path)"
 
+    $perUserPath = [System.IO.Path]::GetFullPath($pythonExe)
+    $perUserRoot = Split-Path -Parent $perUserPath
+    function py {
+        throw 'The Python launcher should not be consulted when a machine-wide Python is available.'
+    }
+    try {
+        $machinePythonPreferred = Resolve-RtmpMonitorPython `
+            -ProgramFilesRoot $programFilesRoot `
+            -RegistryRoots @() `
+            -UserProfilePath $perUserRoot
+        if ($machinePythonPreferred.Path -ine $expectedPath) {
+            throw "The Python launcher result overrode machine Python $expectedPath with $($machinePythonPreferred.Path)."
+        }
+    } finally {
+        Remove-Item Function:\py -ErrorAction SilentlyContinue
+    }
+    Write-Host 'Machine-wide Python preferred over the launcher: passed'
+
     $installPathKey = Join-Path (Join-Path $registryRoot $programFilesPython.Version.ToString(2)) 'InstallPath'
     New-Item -ItemType Directory -Path $installPathKey -Force | Out-Null
     $registrySubPath = $installPathKey.Substring('HKCU:\'.Length)
@@ -44,8 +62,6 @@ try {
     }
     Write-Host "Registry discovery: Python $($registryPython.Version) at $($registryPython.Path)"
 
-    $perUserPath = [System.IO.Path]::GetFullPath($pythonExe)
-    $perUserRoot = Split-Path -Parent $perUserPath
     try {
         $null = Resolve-RtmpMonitorPython -PythonPath $perUserPath -UserProfilePath $perUserRoot
         throw 'A Python executable inside the user profile was accepted for the Windows service.'
