@@ -87,13 +87,10 @@ try:
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
             )
         }
-        for table in ("streams", "agents", "telemetry", "incidents", "metric_aggregates", "aggregate_cursors"):
-            if table in present:
-                escaped = table.replace('"', '""')
-                count = connection.execute(f'SELECT COUNT(*) FROM "{escaped}"').fetchone()[0]
-                print(f"rows_{table}={count}")
-            else:
-                print(f"rows_{table}=table_absent")
+        for table in sorted(present):
+            escaped = table.replace('"', '""')
+            count = connection.execute(f'SELECT COUNT(*) FROM "{escaped}"').fetchone()[0]
+            print(f"rows_{table}={count}")
     finally:
         connection.close()
 except (OSError, sqlite3.Error) as error:

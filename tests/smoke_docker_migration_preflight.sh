@@ -21,6 +21,7 @@ try:
         """
         CREATE TABLE streams (id TEXT PRIMARY KEY);
         CREATE TABLE agents (id TEXT PRIMARY KEY);
+        CREATE TABLE probe_enrollments (id TEXT PRIMARY KEY);
         CREATE TABLE telemetry (id TEXT PRIMARY KEY);
         CREATE TABLE incidents (id TEXT PRIMARY KEY);
         CREATE TABLE metric_aggregates (id TEXT PRIMARY KEY);
@@ -53,6 +54,7 @@ for expected in \
   'sqlite_quick_check=ok' \
   'rows_streams=1' \
   'rows_agents=1' \
+  'rows_probe_enrollments=0' \
   'rows_telemetry=2' \
   'rows_incidents=0' \
   'rows_metric_aggregates=0' \
