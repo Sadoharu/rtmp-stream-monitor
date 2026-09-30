@@ -173,6 +173,45 @@ jobs:
       - name: Exercise Windows per-flow TCP EStats on loopback
         if: runner.os == 'Windows'
         run: python scripts/live_windows_tcp_estats_smoke.py
+      - name: Exercise Windows per-flow TCP EStats as LocalSystem
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $taskName = "RtmpMonitorEStats-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $resultPath = Join-Path $env:ProgramData "$taskName.json"
+          $repoPath = (Get-Location).Path
+          $pythonPath = (Get-Command python -ErrorAction Stop).Source
+          $smokePath = Join-Path $repoPath 'scripts\live_windows_tcp_estats_smoke.py'
+          $action = New-ScheduledTaskAction -Execute $pythonPath -Argument "`"$smokePath`" --result-file `"$resultPath`"" -WorkingDirectory $repoPath
+          $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5)
+          Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -User 'SYSTEM' -RunLevel Highest -Force | Out-Null
+          try {
+            $requestedAt = (Get-Date).AddSeconds(-2)
+            Start-ScheduledTask -TaskName $taskName
+            $deadline = (Get-Date).AddSeconds(30)
+            do {
+              $task = Get-ScheduledTask -TaskName $taskName
+              $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName
+              if ($task.State -ne 'Running' -and $taskInfo.LastRunTime -ge $requestedAt) { break }
+              Start-Sleep -Seconds 1
+            } while ((Get-Date) -lt $deadline)
+            if ($task.State -eq 'Running' -or $taskInfo.LastRunTime -lt $requestedAt) {
+              throw 'The LocalSystem TCP EStats smoke task did not finish in time.'
+            }
+            if (-not (Test-Path -LiteralPath $resultPath)) {
+              throw "The LocalSystem TCP EStats smoke produced no result (task result $($taskInfo.LastTaskResult))."
+            }
+            $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+            Write-Host (ConvertTo-Json -InputObject $result -Depth 8)
+            if (-not $result.ok -or $taskInfo.LastTaskResult -ne 0) {
+              throw "The LocalSystem TCP EStats smoke failed: $($result.error); task result $($taskInfo.LastTaskResult)."
+            }
+          }
+          finally {
+            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue
+          }
       - name: Smoke test Windows service lifecycle
         if: runner.os == 'Windows'
         shell: pwsh
