@@ -15,6 +15,7 @@
 
 ## Перевірки, виконані тут
 
+- 30.09.2026 коміт `3f21842` пройшов повний GitHub Actions Tests workflow [36651027447](https://github.com/Sadoharu/rtmp-stream-monitor/actions/runs/36651027447), включно з новим тестом оновлення бази попередньої схеми, старим agent token та новим enrollment. Central Docker image build [36651027385](https://github.com/Sadoharu/rtmp-stream-monitor/actions/runs/36651027385) також пройшов. Це CI-доказ сумісності коду й пакетування; він не перевіряє міграцію інстансу користувача.
 - Після додавання GHCR image reference і fallback виконано `docker compose config -q`; Git Bash перевірив синтаксис setup/backup/restore shell scripts через `bash -n`. Це перевіряє локальну Compose-конфігурацію та shell syntax, але не запускає новий GitHub release workflow.
 - `docker compose config -q`, збірка образу та `bash -n` усіх setup/backup/restore scripts пройшли.
 - 30.09.2026 `scripts/docker-restore-smoke.sh` пройшов на Docker Desktop із сервісним UID/GID `1001:1001`: перевірив збереження власника named volumes між контейнерами, запис у SQLite/log volumes від імені сервісу, healthcheck, створення stream через API, backup, restore DB/admin-token пари та persistence після restart. Smoke використовує окремий Compose project і named volumes та чистить їх після запуску. Повний GitHub Actions Tests run `36645030158` пройшов, включно з Docker Compose backup/restore і Windows bundled service install/uninstall; окремий central image build run `36645030187` також успішний.
