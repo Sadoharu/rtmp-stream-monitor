@@ -214,15 +214,16 @@ for (raw,) in rows:
     samples.append({
         "status": network.get("tcp_receiver_stats_status"),
         "flow_count": network.get("tcp_receiver_stats_flow_count", 0),
+        "duplicate_ack_episodes": network.get("tcp_duplicate_ack_episodes"),
     })
-available = next((sample for sample in samples if sample["status"] == "AVAILABLE" and sample["flow_count"] > 0), None)
-print(json.dumps(available or {"status": "NOT_AVAILABLE", "samples": samples[:10]}))
+measured = next((sample for sample in samples if sample["status"] == "AVAILABLE" and sample["flow_count"] > 0 and type(sample["duplicate_ack_episodes"]) is int), None)
+print(json.dumps(measured or {"status": "NOT_AVAILABLE", "samples": samples[:10]}))
 '@
         $queryScriptPath = Join-Path $tempRoot 'read-agent-network.py'
         Set-Content -LiteralPath $queryScriptPath -Value $queryOutbox -Encoding utf8
         $statsAvailable = $false
         $lastStats = ''
-        $deadline = (Get-Date).AddSeconds(25)
+        $deadline = (Get-Date).AddSeconds(35)
         while ((Get-Date) -lt $deadline) {
             if (Test-Path -LiteralPath $queuePath) {
                 $lastStats = (& $cleanupPythonExe $queryScriptPath $queuePath | Out-String).Trim()
@@ -236,9 +237,9 @@ print(json.dumps(available or {"status": "NOT_AVAILABLE", "samples": samples[:10
             Start-Sleep -Seconds 1
         }
         if (-not $statsAvailable) {
-            throw "Installed LocalSystem service did not publish probe-owned receiver EStats for its live ffprobe flow. Last outbox query: $lastStats"
+            throw "Installed LocalSystem service did not publish a numeric receiver EStats interval for its live ffprobe flow. Last outbox query: $lastStats"
         }
-        Write-Host "Installed LocalSystem service collected receiver EStats for $($stats.flow_count) live probe-owned TCP flow(s)."
+        Write-Host "Installed LocalSystem service published duplicate_ack_episodes=$($stats.duplicate_ack_episodes) for $($stats.flow_count) live probe-owned TCP flow(s)."
     }
 
     if ($BundlePath) {
