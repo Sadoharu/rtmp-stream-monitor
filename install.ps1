@@ -23,13 +23,13 @@ $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw "Run PowerShell as Administrator and retry .\install.ps1" }
 . (Join-Path $PSScriptRoot 'scripts\windows-python.ps1')
 . (Join-Path $PSScriptRoot 'scripts\windows-install-guidance.ps1')
+. (Join-Path $PSScriptRoot 'scripts\windows-ffmpeg.ps1')
 $bundledPythonExe = Join-Path $PSScriptRoot 'runtime\python.exe'
 $bundledRuntime = Test-Path -LiteralPath $bundledPythonExe
 if ($bundledRuntime -and $PythonPath) { throw "This package includes its own Python runtime; -PythonPath is not used." }
 $configPathWasExplicit = $PSBoundParameters.ContainsKey("ConfigPath")
 $resolvedConfig = Resolve-Path -LiteralPath $ConfigPath -ErrorAction SilentlyContinue
 if (($configPathWasExplicit -or $ReplaceConfig) -and -not $resolvedConfig) { throw "Agent config not found at $ConfigPath." }
-$userProfilePrefix = [System.IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\') + '\'
 
 function Install-RtmpMonitorWinGetPackage {
     param([Parameter(Mandatory)][string]$PackageId)
@@ -42,26 +42,6 @@ function Install-RtmpMonitorWinGetPackage {
         & $winget.Source install --id $PackageId --exact --scope machine
     }
     if ($script:rtmpMonitorNativeExitCode -ne 0) { throw "winget could not install $PackageId (exit code $script:rtmpMonitorNativeExitCode)." }
-}
-
-function Test-RtmpMonitorMachineExecutable {
-    param([string]$Path)
-    if (-not $Path -or [System.IO.Path]::GetExtension($Path) -ine ".exe" -or -not (Test-Path -LiteralPath $Path)) { return $false }
-    $fullPath = [System.IO.Path]::GetFullPath($Path)
-    return -not $fullPath.StartsWith($userProfilePrefix, [System.StringComparison]::OrdinalIgnoreCase)
-}
-
-function Get-RtmpMonitorMachineExecutable {
-    param([Parameter(Mandatory)][string]$Name)
-    $command = Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($command -and (Test-RtmpMonitorMachineExecutable $command.Source)) { return [System.IO.Path]::GetFullPath($command.Source) }
-    $packageRoot = Join-Path $env:ProgramFiles 'WinGet\Packages\Gyan.FFmpeg_*'
-    $candidate = Get-ChildItem -Path $packageRoot -Filter "$Name.exe" -File -Recurse -ErrorAction SilentlyContinue |
-        Where-Object { Test-RtmpMonitorMachineExecutable $_.FullName } |
-        Sort-Object FullName -Descending |
-        Select-Object -First 1
-    if ($candidate) { return [System.IO.Path]::GetFullPath($candidate.FullName) }
-    return $null
 }
 
 if ($bundledRuntime) {

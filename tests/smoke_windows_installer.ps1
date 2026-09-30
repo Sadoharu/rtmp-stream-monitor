@@ -44,6 +44,8 @@ if (-not $programDirWasAbsent -or -not $dataDirWasAbsent) {
     throw 'Unexpected pre-existing RTMP Monitor installation directories on the hosted runner.'
 }
 
+. (Join-Path $repoRoot 'scripts\windows-ffmpeg.ps1')
+
 $testBin = Join-Path $dataDir 'installer-ci-bin'
 $configPath = Join-Path $tempRoot 'agent.yaml'
 $logDir = Join-Path $dataDir 'logs\installer-ci'
@@ -69,15 +71,27 @@ try {
     }
 
     if ($UseInstalledFfmpeg) {
-        $wingetPackageRoot = Join-Path $env:ProgramFiles 'WinGet\Packages\Gyan.FFmpeg_*'
-        foreach ($toolName in @('ffmpeg.exe', 'ffprobe.exe')) {
-            $tool = Get-ChildItem -Path $wingetPackageRoot -Filter $toolName -File -Recurse -ErrorAction SilentlyContinue |
-                Select-Object -First 1
-            if (-not $tool) { throw "WinGet did not install machine-accessible $toolName under $wingetPackageRoot." }
-            & $tool.FullName -version 2>&1 | Select-Object -First 1 | Write-Host
-            if ($LASTEXITCODE -ne 0) { throw "Installed $toolName did not run successfully at $($tool.FullName)." }
-            if ($toolName -eq 'ffmpeg.exe') { $expectedFfmpegPath = [System.IO.Path]::GetFullPath($tool.FullName) }
-            if ($toolName -eq 'ffprobe.exe') { $expectedFfprobePath = [System.IO.Path]::GetFullPath($tool.FullName) }
+        foreach ($toolName in @('ffmpeg', 'ffprobe')) {
+            $toolPath = Get-RtmpMonitorMachineExecutable -Name $toolName -WinGetOnly
+            if (-not $toolPath) {
+                $winget = Get-Command winget.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($winget) { & $winget.Source --info 2>&1 | Write-Host }
+                $programFilesX86 = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86)
+                foreach ($root in @(
+                    (Join-Path $env:ProgramFiles 'WinGet'),
+                    (Join-Path $programFilesX86 'WinGet'),
+                    (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet')
+                )) {
+                    if (Test-Path -LiteralPath $root) {
+                        Get-ChildItem -LiteralPath $root -Force | Select-Object FullName,Attributes | Format-Table -AutoSize | Out-String | Write-Host
+                    }
+                }
+                throw "WinGet did not expose machine-accessible $toolName.exe through PATH, WinGet Links, or the portable package directory."
+            }
+            & $toolPath -version 2>&1 | Select-Object -First 1 | Write-Host
+            if ($LASTEXITCODE -ne 0) { throw "Installed $toolName.exe did not run successfully at $toolPath." }
+            if ($toolName -eq 'ffmpeg') { $expectedFfmpegPath = $toolPath }
+            if ($toolName -eq 'ffprobe') { $expectedFfprobePath = $toolPath }
         }
     } else {
         Copy-Item -LiteralPath (Join-Path $env:WINDIR 'System32\where.exe') -Destination (Join-Path $testBin 'ffmpeg.exe')
