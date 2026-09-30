@@ -125,6 +125,8 @@ Docker Compose для центрального сервера спираєтьс
 
 **Ізольований end-to-end доказ M4 (30.09.2026):** локальний Docker Desktop прогін пройшов міграцію старої systemd-style SQLite бази у named volume, читання bitrate/events/incident через Compose API, подачу телеметрії старим agent token, backup/restore, restart і запуск systemd-style сервісу з експортованої для rollback пари DB/token. Він перевіряє сценарій fixture з поточним образом; реальна міграція Ubuntu-хоста, доступність сервісу з його мережі та rollback на старий production binary лишаються відкритими. Подробиці у [звіті M4](m4-docker-compose.md); цей прогін також додано до Docker Compose CI smoke.
 
+**Підтвердження M4 у hosted CI (30.09.2026):** після переносу тестової fixture з bind mount у тимчасові named volumes коміт `7512a33` пройшов повний Tests run [36671246902](https://github.com/Sadoharu/rtmp-stream-monitor/actions/runs/36671246902); central image publish/build run [36671246929](https://github.com/Sadoharu/rtmp-stream-monitor/actions/runs/36671246929) також успішний. Реальна міграція/відкат production сервера досі потребує окремої перевірки.
+
 ### M5 — просте додавання та життєвий цикл probe — частково виконано
 
 Майстер enrollment, Windows installer, Ubuntu package, стан підключення, оновлення, відкликання токена й видалення. **Приймання:** Windows-клієнт підключається без окремої установки Python і правки YAML; оператор бачить причину помилки, якщо probe не з'єднався; після uninstall служби і файлів агента немає, історія на сервері лишається доступною за політикою збереження.
