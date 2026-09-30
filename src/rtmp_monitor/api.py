@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import Float, case, cast, func, or_, select, union, update
 from sqlalchemy.orm import Session
+from starlette.middleware.gzip import GZipMiddleware
 
 from . import __version__
 from .config import CentralFileConfig
@@ -211,6 +212,7 @@ def create_app(config: CentralFileConfig | None = None, database_url: str | None
         engine.dispose()
 
     app = FastAPI(title="RTMP Stream Monitor", version=__version__, lifespan=lifespan)
+    app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=6)
     static_dir = Path(__file__).parent / "static"
     app.mount("/assets", StaticFiles(directory=static_dir / "assets", check_dir=False), name="dashboard-assets")
     app.state.sessions = sessions
