@@ -88,8 +88,10 @@ try {
                 }
                 throw "WinGet did not expose machine-accessible $toolName.exe through PATH, WinGet Links, or the portable package directory."
             }
-            & $toolPath -version 2>&1 | Select-Object -First 1 | Write-Host
-            if ($LASTEXITCODE -ne 0) { throw "Installed $toolName.exe did not run successfully at $toolPath." }
+            $toolOutput = & $toolPath -version 2>&1
+            $toolExitCode = $LASTEXITCODE
+            if ($toolExitCode -ne 0) { throw "Installed $toolName.exe did not run successfully at $toolPath (exit code $toolExitCode)." }
+            $toolOutput | Select-Object -First 1 | Write-Host
             if ($toolName -eq 'ffmpeg') { $expectedFfmpegPath = $toolPath }
             if ($toolName -eq 'ffprobe') { $expectedFfprobePath = $toolPath }
         }
