@@ -94,10 +94,22 @@ This verifies reproducible bitstream damage, a decode diagnostic, and frame/bitr
 
 - A simultaneous real `SERVER_EGRESS` probe and at least two clients on separate Windows/Ubuntu hosts are not available from this workstation. The three-probe localization chain cannot be accepted from same-host client probes.
 - Controlled video-freeze, configured long-GOP/keyframe-gap, RTMP server-restart, client-only TCP outage, deterministic H.264 bitstream corruption/recovery, and injected RTMP-path IP packet loss/recovery scenarios were induced against isolated SRS sources. The freeze reached the browser; the other scenarios reached the V2 API with recovered measurements. The network-loss harness confirmed actual drops with `tc`, but the product did not diagnose them consistently at 20%; independent-site localization and validation of Windows per-flow receiver statistics remain open.
-- The multi-probe API was exercised against a real feed. Browser rendering and evidence-card interaction were verified for the controlled local fixture; browser graph interaction for the live user feed remains unchecked. Earlier four-series load views were checked separately as noted in M2.
+- The multi-probe API and browser graph were exercised against the real user feed on 2026-09-30; both Windows probe lines and the live `CLIENT_PATH_UNCONFIRMED` explanation rendered. Earlier four-series load views were checked separately as noted in M2. These two probes shared one workstation and network.
 - No PostgreSQL deployment or migration of the user's Ubuntu systemd database was performed. Clean Windows/Ubuntu installs, real upgrade/rollback, and self-contained Windows/Ubuntu packages are still open under M4/M5.
 
 These gaps require access to the target Ubuntu host and a separate Windows/Ubuntu client (or an isolated RTMP test server for controlled fault injection). They do not invalidate the verified concurrent measurement/API path, but M6 is not complete.
+
+## Live `poland` browser graph — 2026-09-30
+
+Ran `scripts/live-multiprobe-smoke.py` for 40 seconds on Windows against the user-provided RTMP source, with concurrent `DEEP` and `LIGHT` CLIENT probes and an isolated temporary SQLite collector. The API returned one-second resolution and 36 measured buckets per profile. `DEEP` mean/min/max were `8.301/5.390/13.406 Mbps`; `LIGHT` were `8.497/2.075/19.303 Mbps`. The production dashboard loaded the capture in Chrome; its 15-minute chart showed both measured lines and their event markers.
+
+The dashboard's `CLIENT_PATH_UNCONFIRMED` card showed PTS regression evidence, missing `SERVER_INGRESS` and `SERVER_EGRESS` observations, no usable client network metric, and an unsynchronized probe clock. It stated that client, server-restream, and upstream causes could not be separated. The result stayed unconfirmed; this capture does not identify the root cause of the real feed's timestamp symptom. Both CLIENT probes shared this Windows workstation and network, so independent-site localization remains unverified. The temporary collector and its data were isolated from the user's production server.
+
+## Installed Windows service EStats interval — 2026-09-30
+
+The first strong smoke assertion exposed why a numeric EStats delta was missing: the command's fixed 15-second FFmpeg read timeout restarted `ffprobe` before the no-media loopback sink produced a second sample for the same process-owned socket. The command now sets the read timeout to at least five seconds beyond `monitoring.dead_threshold`, so the agent's configured health deadline controls restarts. A unit test checks both `LIGHT` and `DEEP` command construction.
+
+GitHub Actions run [36666519858](https://github.com/Sadoharu/rtmp-stream-monitor/actions/runs/36666519858) completed the RTMP handshake in the bundled Windows smoke, ran the actual WinGet `ffprobe` from the installed `LocalSystem` service, and observed `tcp_receiver_stats_status=AVAILABLE`, `flow_count=1`, and numeric `duplicate_ack_episodes=0` in the agent outbox. The zero is a measured interval with no counter growth; it is not a loss-sensitivity test. All workflow jobs passed. Packet loss/reordering diagnosis under controlled impairment remains open.
 
 ## Windows per-flow receiver TCP signal — 2026-09-30 (installed service loopback passed; loss diagnosis pending)
 
