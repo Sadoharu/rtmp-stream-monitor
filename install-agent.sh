@@ -72,7 +72,8 @@ if [[ -z "$PYTHON_BIN" ]]; then
   exit 1
 fi
 PYTHON_VERSION="$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-if [[ "$PYTHON_BIN" != "$(command -v python3)" ]] && apt-cache show "python${PYTHON_VERSION}-venv" >/dev/null 2>&1; then
+SYSTEM_PYTHON_BIN="$(command -v python3)"
+if [[ "$(readlink -f "$PYTHON_BIN")" != "$(readlink -f "$SYSTEM_PYTHON_BIN")" ]] && apt-cache show "python${PYTHON_VERSION}-venv" >/dev/null 2>&1; then
   apt-get install -y "python${PYTHON_VERSION}-venv"
 fi
 command -v ffmpeg >/dev/null 2>&1 || { echo "ffmpeg was not found after installing the package" >&2; exit 1; }
