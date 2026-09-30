@@ -30,6 +30,19 @@ jobs:
           path: ${{ runner.temp }}/agent-deb/*
           if-no-files-found: error
 
+  ubuntu-agent-installer:
+    name: Ubuntu enrollment install / purge
+    runs-on: ubuntu-22.04
+    needs: ubuntu-agent-package
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          name: ubuntu-22.04-agent-package
+          path: ${{ runner.temp }}/agent-deb
+      - name: Install, enroll, start service, deliver telemetry, and purge
+        run: bash tests/smoke_ubuntu_installer.sh "$RUNNER_TEMP/agent-deb"
+
   windows-agent-package:
     name: Build bundled Windows agent package
     runs-on: windows-latest
