@@ -37,17 +37,6 @@ command -v ffmpeg >/dev/null
 command -v ffprobe >/dev/null
 command -v rtmp-monitor-agent-install >/dev/null
 
-state=""
-for _ in $(seq 1 30); do
-  state="$(systemctl is-system-running 2>/dev/null || true)"
-  if [[ "$state" == running || "$state" == degraded ]]; then break; fi
-  sleep 1
-done
-[[ "$state" == running || "$state" == degraded ]] || {
-  echo "Expected a ready systemd host, got: ${state:-unavailable}" >&2
-  exit 1
-}
-
 python3 -m venv "$WORK/server-venv"
 "$WORK/server-venv/bin/pip" install --disable-pip-version-check "$ROOT"
 mkdir -p "$WORK/data" "$WORK/logs"
