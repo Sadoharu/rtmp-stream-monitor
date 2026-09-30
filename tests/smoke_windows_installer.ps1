@@ -171,6 +171,50 @@ log_dir: '$logDirYaml'
         throw "Service did not launch the configured ffprobe executable. Log: $logPath"
     }
 
+    if ($BundlePath) {
+        $probeStartMessage = 'Started LIGHT probe subprocess for stream windows-installer-ci'
+        $probeStartCountBeforeUpgrade = [regex]::Matches($logText, [regex]::Escape($probeStartMessage)).Count
+        $configBeforeUpgrade = Get-Content -LiteralPath $installedConfig -Raw
+        $preservationMarker = Join-Path $dataDir 'upgrade-preservation-marker.txt'
+        Set-Content -LiteralPath $preservationMarker -Value 'preserve-local-data' -Encoding ascii
+
+        $upgradeOutput = (& (Join-Path $installerRoot 'install.ps1') -ConfigPath $configPath *>&1 | Out-String)
+        if ($LASTEXITCODE -ne 0) { throw 'Running the bundled installer over an existing installation failed.' }
+        Write-Host $upgradeOutput
+        if ($upgradeOutput -notmatch 'Preserving existing agent config') {
+            throw 'The bundled installer did not preserve the existing agent configuration during upgrade.'
+        }
+        if (-not (Test-Path -LiteralPath $preservationMarker)) {
+            throw 'The bundled installer removed local data during upgrade.'
+        }
+        $configAfterUpgrade = Get-Content -LiteralPath $installedConfig -Raw
+        if ($configAfterUpgrade -ne $configBeforeUpgrade) {
+            throw 'The bundled installer changed the existing agent configuration during upgrade.'
+        }
+
+        $deadline = (Get-Date).AddSeconds(20)
+        do {
+            $service = Get-Service -Name $serviceName -ErrorAction Stop
+            if ($service.Status -eq 'Running') { break }
+            Start-Sleep -Seconds 1
+        } while ((Get-Date) -lt $deadline)
+        if ($service.Status -ne 'Running') {
+            throw "Upgraded service did not reach Running state (current: $($service.Status))."
+        }
+
+        $deadline = (Get-Date).AddSeconds(15)
+        do {
+            if (Test-Path -LiteralPath $logPath) { $logText = Get-Content -LiteralPath $logPath -Raw }
+            $probeStartCountAfterUpgrade = [regex]::Matches($logText, [regex]::Escape($probeStartMessage)).Count
+            if ($probeStartCountAfterUpgrade -gt $probeStartCountBeforeUpgrade) { break }
+            Start-Sleep -Seconds 1
+        } while ((Get-Date) -lt $deadline)
+        if ($probeStartCountAfterUpgrade -le $probeStartCountBeforeUpgrade) {
+            throw 'The upgraded Windows service did not relaunch its configured ffprobe probe.'
+        }
+        Write-Host 'Bundled installer upgrade preserved config/data and restarted the probe service.'
+    }
+
     if ($service) { $service.Dispose(); $service = $null }
     $uninstallOutput = (& (Join-Path $installerRoot 'uninstall.ps1') -Force *>&1 | Out-String)
     Write-Host $uninstallOutput
