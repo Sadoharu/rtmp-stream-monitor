@@ -1,4 +1,4 @@
-param([string]$BundlePath = '')
+param([string]$BundlePath = '', [switch]$UseInstalledFfmpeg)
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -50,6 +50,8 @@ $logDir = Join-Path $dataDir 'logs\installer-ci'
 $stateDir = Join-Path $dataDir 'data\installer-ci'
 $logPath = Join-Path $logDir 'rtmp-monitor.jsonl'
 $originalPath = $env:PATH
+$expectedFfmpegPath = Join-Path $testBin 'ffmpeg.exe'
+$expectedFfprobePath = Join-Path $testBin 'ffprobe.exe'
 
 try {
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
@@ -66,8 +68,21 @@ try {
         $pythonVersion = $resolvedPython.Version.ToString(2)
     }
 
-    Copy-Item -LiteralPath (Join-Path $env:WINDIR 'System32\where.exe') -Destination (Join-Path $testBin 'ffmpeg.exe')
-    Copy-Item -LiteralPath (Join-Path $env:WINDIR 'System32\where.exe') -Destination (Join-Path $testBin 'ffprobe.exe')
+    if ($UseInstalledFfmpeg) {
+        $wingetPackageRoot = Join-Path $env:ProgramFiles 'WinGet\Packages\Gyan.FFmpeg_*'
+        foreach ($toolName in @('ffmpeg.exe', 'ffprobe.exe')) {
+            $tool = Get-ChildItem -Path $wingetPackageRoot -Filter $toolName -File -Recurse -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+            if (-not $tool) { throw "WinGet did not install machine-accessible $toolName under $wingetPackageRoot." }
+            & $tool.FullName -version 2>&1 | Select-Object -First 1 | Write-Host
+            if ($LASTEXITCODE -ne 0) { throw "Installed $toolName did not run successfully at $($tool.FullName)." }
+            if ($toolName -eq 'ffmpeg.exe') { $expectedFfmpegPath = [System.IO.Path]::GetFullPath($tool.FullName) }
+            if ($toolName -eq 'ffprobe.exe') { $expectedFfprobePath = [System.IO.Path]::GetFullPath($tool.FullName) }
+        }
+    } else {
+        Copy-Item -LiteralPath (Join-Path $env:WINDIR 'System32\where.exe') -Destination (Join-Path $testBin 'ffmpeg.exe')
+        Copy-Item -LiteralPath (Join-Path $env:WINDIR 'System32\where.exe') -Destination (Join-Path $testBin 'ffprobe.exe')
+    }
     $env:PATH = "$testBin;$env:PATH"
 
     $logDirYaml = $logDir.Replace('\', '/')
@@ -126,8 +141,10 @@ log_dir: '$logDirYaml'
 
     $installedConfig = Join-Path $dataDir 'agent.yaml'
     $installedConfigText = Get-Content -LiteralPath $installedConfig -Raw
-    if ($installedConfigText -notmatch [regex]::Escape((Join-Path $testBin 'ffprobe.exe'))) {
-        throw 'The installer did not persist the machine-accessible ffprobe path in the protected config.'
+    foreach ($expectedToolPath in @($expectedFfmpegPath, $expectedFfprobePath)) {
+        if ($installedConfigText -notmatch [regex]::Escape($expectedToolPath)) {
+            throw "The installer did not persist the expected machine-accessible FFmpeg path: $expectedToolPath."
+        }
     }
 
     $deadline = (Get-Date).AddSeconds(15)
@@ -156,6 +173,9 @@ log_dir: '$logDirYaml'
         throw "Windows uninstall did not fully remove the service (sc.exe query exit code $serviceQueryExitCode)."
     }
     $global:LASTEXITCODE = 0
+    if ($UseInstalledFfmpeg) {
+        Write-Host 'Production installer resolved machine-wide WinGet FFmpeg and launched ffprobe from that package.'
+    }
     if ($BundlePath) {
         Write-Host 'Bundled Windows installer and uninstall passed without requiring a system Python installation.'
     } else {

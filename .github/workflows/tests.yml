@@ -88,9 +88,15 @@ jobs:
         with:
           name: windows-agent-package
           path: ${{ runner.temp }}/windows-agent
+      - name: Install machine-wide FFmpeg with WinGet
+        shell: powershell
+        run: |
+          $winget = Get-Command winget.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1
+          & $winget.Source install --id Gyan.FFmpeg --exact --scope machine --source winget --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
+          if ($LASTEXITCODE -ne 0) { throw "WinGet failed to install Gyan.FFmpeg (exit code $LASTEXITCODE)." }
       - name: Run bundled installer without system Python
         shell: powershell
-        run: .\tests\smoke_windows_installer.ps1 -BundlePath "$env:RUNNER_TEMP\windows-agent\rtmp-monitor-agent-windows.zip"
+        run: .\tests\smoke_windows_installer.ps1 -BundlePath "$env:RUNNER_TEMP\windows-agent\rtmp-monitor-agent-windows.zip" -UseInstalledFfmpeg
 
   frontend:
     name: Dashboard frontend
