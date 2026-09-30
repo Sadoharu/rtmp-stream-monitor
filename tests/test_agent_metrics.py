@@ -239,6 +239,24 @@ def test_deep_command_uses_a_shared_demux_framecrc_output_and_stderr_progress(tm
     assert command[-3:] == ["-hash", "crc32", "pipe:1"]
 
 
+def test_probe_io_timeout_exceeds_configured_dead_threshold(tmp_path):
+    for profile in ("LIGHT", "DEEP"):
+        config = AgentFileConfig.model_validate({
+            "server": {"url": "http://central.example:8090"},
+            "agent": {"name": f"{profile.lower()}-test", "token": "test-token", "profile": profile},
+            "streams": [{"id": "poland", "url": "rtmp://server.example/live/poland"}],
+            "monitoring": {"dead_threshold": 60},
+            "ffmpeg_path": str(tmp_path / "bin" / "ffmpeg"),
+            "ffprobe_path": str(tmp_path / "bin" / "ffprobe"),
+            "state_dir": str(tmp_path / "state"),
+            "log_dir": str(tmp_path / "logs"),
+        })
+        probe = StreamProbe(config.streams[0], config, LocalQueue(tmp_path / f"{profile}.db", 1024 * 1024, 100))
+        command = probe.command()
+
+        assert command[command.index("-rw_timeout") + 1] == "65000000"
+
+
 def test_connection_reset_clears_stale_timestamp_baselines(tmp_path):
     config = AgentFileConfig.model_validate({
         "server": {"url": "http://central.example:8090"},

@@ -143,6 +143,8 @@ agent:
 streams:
   - id: windows-installer-ci
     url: rtmp://127.0.0.1:$rtmpPort/live/windows-installer-ci
+monitoring:
+  dead_threshold: 120
 network:
   enabled: $($UseInstalledFfmpeg.ToString().ToLowerInvariant())
   server_host: 127.0.0.1

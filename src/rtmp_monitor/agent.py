@@ -84,11 +84,14 @@ class StreamProbe:
     def command(self) -> list[str]:
         ffmpeg = str(self.config.ffmpeg_path) if self.config.ffmpeg_path else shutil.which("ffmpeg")
         ffprobe = str(self.config.ffprobe_path) if self.config.ffprobe_path else shutil.which("ffprobe")
+        # Leave the input read alive slightly longer than the monitor's own
+        # silence deadline, so its health policy controls probe restarts.
+        rw_timeout = str(int(max(15.0, self.config.monitoring.dead_threshold + 5.0) * 1_000_000))
         if self.config.agent.profile == "LIGHT":
             if not ffprobe:
                 raise RuntimeError("ffprobe was not found on PATH")
             return [
-                ffprobe, "-hide_banner", "-v", "info", "-rw_timeout", "15000000",
+                ffprobe, "-hide_banner", "-v", "info", "-rw_timeout", rw_timeout,
                 "-show_packets", "-show_entries", "packet=stream_index,pts_time,dts_time,flags,size",
                 "-of", "compact=p=0:nk=0", self.stream.url,
             ]
@@ -98,7 +101,7 @@ class StreamProbe:
         return [
             ffmpeg, "-hide_banner", "-nostats", "-loglevel", "info", "-debug_ts",
             "-progress", "pipe:2", "-stats_period", interval,
-            "-rw_timeout", "15000000", "-i", self.stream.url,
+            "-rw_timeout", rw_timeout, "-i", self.stream.url,
             "-map", "0:v?", "-map", "0:a?",
             "-vf", f"freezedetect=n=-60dB:d={self.config.monitoring.freeze_threshold},showinfo",
             "-af", f"silencedetect=n=-50dB:d={self.config.monitoring.silence_threshold},ashowinfo",
