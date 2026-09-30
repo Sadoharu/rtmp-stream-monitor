@@ -131,7 +131,7 @@ if not match:
     raise SystemExit("Ubuntu upgrade smoke requires a three-part numeric project version.")
 major, minor, patch = map(int, match.groups())
 next_version = f"{major}.{minor}.{patch + 1}"
-text = text[:match.start(1)] + next_version + text[match.end(1):]
+text = text[:match.start()] + f'version = "{next_version}"' + text[match.end():]
 path.write_text(text, encoding="utf-8")
 print(next_version)
 PY
