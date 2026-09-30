@@ -167,6 +167,8 @@ A 20% repeat with the current build recorded 282 qdisc drops and eight positive 
 
 A current-build 50% repeat recorded 131 qdisc drops and nine positive `SERVER_EGRESS` buckets averaging `1.002 Mbps`. The required `NETWORK_PATH_PROBLEM` assertion passed with `11.141 s` client media PTS lag while egress stayed healthy; both clients resumed fresh measured media without TCP reconnects. Confidence remained `UNCONFIRMED`, correctly describing the observed lag without asserting the injected loss mechanism. Windows per-flow EStats were still unavailable in this interactive smoke, so this does not validate the installed `LocalSystem` service's EStats under packet impairment. Together, these two runs preserve the observed boundary: severe impairment with large measured media lag was localized, while this 20% run produced no user-visible lag and no network diagnosis.
 
+Another current-build 20% run on 2026-09-30 injected loss for about 8.7 seconds; `tc` counted 230 dropped IP packets. Direct `SERVER_EGRESS` returned nine measured buckets averaging `1.052 Mbps`, and both clients stayed connected and sent fresh media after recovery. The timeline showed `PTS_REGRESSION` and `AV_TIMESTAMP_DRIFT`, but no `NETWORK_PATH_PROBLEM`; per-flow Windows EStats were `PERMISSION_DENIED` with zero readable flows. This confirms the injected drops and timestamp symptoms, but does not prove that the drops caused those symptoms or identify a network fault. As in the other interactive runs, transport evidence was unavailable to the agent process.
+
 Reproduce with:
 
 ```powershell
