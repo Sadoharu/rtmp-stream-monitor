@@ -178,7 +178,7 @@ jobs:
         run: python -m pip install -e ".[test,windows-service]"
       - name: Check Ubuntu installer shell syntax
         if: runner.os == 'Linux'
-        run: bash -n install.sh install-server.sh install-agent.sh
+        run: bash -n install.sh install-server.sh install-agent.sh scripts/docker-migration-preflight.sh
       - name: Run test suite
         run: python -m pytest
       - name: Test Windows Python discovery

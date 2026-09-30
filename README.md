@@ -69,6 +69,14 @@ Backup bundle містить узгоджену SQLite-копію та admin tok
 
 #### Перенесення з наявного systemd сервера
 
+Перед переходом можна без зупинки сервісу зібрати read-only стан системи. Команда не читає вміст admin token і не друкує URL-и чи назви потоків:
+
+```bash
+sudo bash scripts/docker-migration-preflight.sh
+```
+
+За нестандартних шляхів передайте `RTMP_MONITOR_PREFLIGHT_DB=/absolute/path/to/central.db` та/або `RTMP_MONITOR_PREFLIGHT_TOKEN=/absolute/path/to/admin.token`, наприклад через `sudo env ... bash scripts/docker-migration-preflight.sh`. Перевірка рахує рядки таблиць, тому на великій базі може тривати; вона не змінює файли та не зупиняє central.
+
 На тому самому хості використовуйте той самий каталог checkout для Compose. Спершу створіть `.env` і каталоги без запуску контейнера, звичайним користувачем:
 
 ```bash
