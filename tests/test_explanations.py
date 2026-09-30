@@ -118,6 +118,46 @@ def test_causal_analysis_localizes_client_network_problem_from_contemporaneous_e
     assert packet["causal_analysis"]["confidence"] == "medium"
 
 
+def test_windows_receiver_duplicate_ack_explanation_names_lost_or_reordered_segments():
+    now = datetime.now(timezone.utc)
+    incident = _incident(context={"timeline": [
+        {"timestamp": now.isoformat(), "agent": "server", "role": "SERVER_EGRESS", "status": "OK",
+         "metrics": {"profile": "DEEP", "ffmpeg_running": True, "last_frame_age": 0.1, "fps": 50,
+                     "clock": {"ntp_synchronized": True}}, "events": []},
+        {"timestamp": (now + timedelta(seconds=1)).isoformat(), "agent": "predator", "role": "CLIENT", "status": "WARNING",
+         "metrics": {"profile": "DEEP", "last_frame_age": 5,
+                     "network": {"provider": "windows", "tcp_state": "ESTABLISHED",
+                                 "tcp_duplicate_ack_episodes": 2, "tcp_duplicate_acks": 5,
+                                 "tcp_receiver_stats_status": "AVAILABLE", "tcp_receiver_stats_flow_count": 1},
+                     "clock": {"ntp_synchronized": True}},
+         "events": [{"code": "FREEZE_START", "severity": "WARNING", "details": {}}]},
+    ]})
+
+    packet = explanations.build_evidence_packet(incident, [])
+
+    assert packet["causal_analysis"]["cause_key"] == "NETWORK_PATH"
+    assert "2 епізод(и) duplicate ACK" in packet["causal_analysis"]["summary"]
+    assert "пропущеними або переставленими" in packet["causal_analysis"]["summary"]
+    assert "не вимірює відсоток втрат" in packet["causal_analysis"]["summary"]
+    assert any("2 епізод(и) duplicate ACK" in item["fact"] for item in packet["evidence"])
+
+
+def test_windows_receiver_permission_error_is_explained_as_unknown_not_zero():
+    now = datetime.now(timezone.utc)
+    incident = _incident(context={"timeline": [{
+        "timestamp": now.isoformat(), "agent": "predator", "role": "CLIENT", "status": "WARNING",
+        "metrics": {"network": {"provider": "windows", "tcp_retransmissions": 0,
+                                 "tcp_receiver_stats_status": "PERMISSION_DENIED",
+                                 "tcp_receiver_stats_flow_count": 0}},
+        "events": [{"code": "FREEZE_START", "severity": "WARNING", "details": {}}],
+    }]})
+
+    packet = explanations.build_evidence_packet(incident, [])
+
+    assert any("Windows не дозволив увімкнути per-flow TCP counters" in item["fact"] for item in packet["evidence"])
+    assert any("значення невідоме, не нульове" in item["fact"] for item in packet["evidence"])
+
+
 def test_pts_lag_explanation_uses_safe_evidence_without_claiming_packet_loss():
     now = datetime.now(timezone.utc)
     clock = {"ntp_synchronized": True}

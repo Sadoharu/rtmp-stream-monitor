@@ -44,6 +44,8 @@ BOOL_METRIC_KEYS = {"ffmpeg_running", "srs_api_available", "ingress_active"}
 NETWORK_KEYS = {
     "sample_age_seconds", "sample_interval_seconds", "tcp_retransmissions", "tcp_state", "rtt_ms",
     "packet_loss_percent", "icmp_reply_count", "icmp_probe_count", "provider", "icmp_status",
+    "tcp_duplicate_ack_episodes", "tcp_duplicate_acks", "tcp_receiver_stats_status",
+    "tcp_receiver_stats_flow_count",
 }
 EVENT_DETAIL_KEYS = {
     "pts", "previous_pts", "dts", "previous_dts", "value", "gap_seconds", "frame_age_seconds", "decode_errors",
@@ -102,7 +104,7 @@ def _safe_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         safe_network: dict[str, Any] = {}
         for key in NETWORK_KEYS:
             value = network.get(key)
-            if key in {"provider", "tcp_state", "icmp_status"}:
+            if key in {"provider", "tcp_state", "icmp_status", "tcp_receiver_stats_status"}:
                 if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.+-]{1,32}", value):
                     safe_network[key] = value
             else:
@@ -152,6 +154,13 @@ def _has_useful_network_sample(metrics: dict[str, Any]) -> bool:
     if network_sample_is_stale(network):
         return False
     if _number(network.get("tcp_retransmissions")) is not None:
+        return True
+    if (
+        network.get("provider") == "windows"
+        and network.get("tcp_receiver_stats_status") == "AVAILABLE"
+        and (_number(network.get("tcp_receiver_stats_flow_count")) or 0) > 0
+        and _number(network.get("tcp_duplicate_ack_episodes")) is not None
+    ):
         return True
     if _number(network.get("rtt_ms")) is not None:
         return True
@@ -214,6 +223,14 @@ def _network_fault(sample: dict[str, Any]) -> tuple[bool, bool]:
         return False, False
     retransmits = _number(network.get("tcp_retransmissions"))
     provider = str(network.get("provider", "")).lower()
+    receiver_episodes = _number(network.get("tcp_duplicate_ack_episodes"))
+    receiver_stats_available = (
+        provider == "windows"
+        and network.get("tcp_receiver_stats_status") == "AVAILABLE"
+        and (_number(network.get("tcp_receiver_stats_flow_count")) or 0) > 0
+    )
+    if receiver_stats_available and receiver_episodes is not None and receiver_episodes > 0:
+        return True, False
     if retransmits is not None and retransmits > 0:
         return (False, True) if provider == "windows" else (True, False)
     loss, replies = _number(network.get("packet_loss_percent")), _number(network.get("icmp_reply_count"))
@@ -299,6 +316,22 @@ def _episode_assessment(packet: dict[str, Any], episode: dict[str, Any]) -> dict
         key = "NETWORK_PATH"
         confidence = "low" if clock_uncertain else "medium"
         text = "SERVER_EGRESS продовжував віддавати медіа, а клієнтська проблема збіглася з конкретною мережевою ознакою. Найімовірніше, медіа пошкоджувалось або затримувалось на шляху до клієнта."
+        receiver_findings = [
+            _number(sample["metrics"]["network"].get("tcp_duplicate_ack_episodes"))
+            for sample in client_faults
+            if isinstance(sample.get("metrics", {}).get("network"), dict)
+            and sample["metrics"]["network"].get("provider") == "windows"
+            and sample["metrics"]["network"].get("tcp_receiver_stats_status") == "AVAILABLE"
+            and (_number(sample["metrics"]["network"].get("tcp_receiver_stats_flow_count")) or 0) > 0
+            and (_number(sample["metrics"]["network"].get("tcp_duplicate_ack_episodes")) or 0) > 0
+        ]
+        if receiver_findings:
+            duplicate_ack_episodes = max(value for value in receiver_findings if value is not None)
+            text += (
+                f" З'єднання FFmpeg до RTMP-сервера зафіксувало {duplicate_ack_episodes:g} епізод(и) duplicate ACK; "
+                "це сумісно з пропущеними або переставленими TCP-сегментами на шляху до клієнта. "
+                "Лічильник не відрізняє втрату від перестановки й не вимірює відсоток втрат."
+            )
         if media_pts_lags:
             lag = max(media_pts_lags, key=lambda item: item["lag_seconds"])
             text += f" Додатково, два LIGHT probe зафіксували різницю медіа PTS {lag['lag_seconds']:g} с при різниці часу отримання samples {abs(lag['sample_skew_seconds']):g} с; це підтверджує відставання клієнтської медіашкали, але не встановлює втрату пакетів або конкретний вузол мережі."
@@ -319,17 +352,27 @@ def _episode_assessment(packet: dict[str, Any], episode: dict[str, Any]) -> dict
     elif client_faults and egress_clean:
         client_has_decode_error = bool("DECODE_ERROR" in client_codes or any((_number(sample.get("metrics", {}).get("decode_errors")) or 0) > 0 for sample in client_faults))
         clean_flow_network = any(
-            sample.get("metrics", {}).get("network", {}).get("provider") == "linux"
-            and not network_sample_is_stale(sample.get("metrics", {}).get("network", {}))
-            and str(sample.get("metrics", {}).get("network", {}).get("tcp_state", "")).upper() in {"ESTABLISHED", "ESTAB"}
-            and _number(sample.get("metrics", {}).get("network", {}).get("tcp_retransmissions")) == 0
+            not network_sample_is_stale((network := sample.get("metrics", {}).get("network", {})))
+            and (
+                (
+                    network.get("provider") == "linux"
+                    and str(network.get("tcp_state", "")).upper() in {"ESTABLISHED", "ESTAB"}
+                    and _number(network.get("tcp_retransmissions")) == 0
+                )
+                or (
+                    network.get("provider") == "windows"
+                    and network.get("tcp_receiver_stats_status") == "AVAILABLE"
+                    and (_number(network.get("tcp_receiver_stats_flow_count")) or 0) > 0
+                    and _number(network.get("tcp_duplicate_ack_episodes")) == 0
+                )
+            )
             for sample in by_role["CLIENT"]
         )
         client_has_media_error = client_has_decode_error or bool(client_codes & {"BITSTREAM_PARSE_ERROR", "PTS_REGRESSION", "PTS_JUMP", "DTS_REGRESSION", "KEYFRAME_GAP"})
         if client_has_media_error and clean_flow_network:
             key = "CLIENT_RECEIVE_OR_DECODER"
             confidence = "low" if clock_uncertain else "medium"
-            text = "SERVER_EGRESS передавав медіа, на клієнті є помилка обробки медіаданих (розбору бітстріму, у декодері клієнта або часових позначок), а доступний per-flow TCP sample не показав retransmits. Це найбільше відповідає проблемі на прийманні або декодері клієнта; мережеві counters не виключають усі мережеві причини."
+            text = "SERVER_EGRESS передавав медіа, на клієнті є помилка обробки медіаданих (розбору бітстріму, у декодері клієнта або часових позначок), а доступний per-flow TCP sample не показав ознак повторної передачі чи duplicate ACK episodes. Це найбільше відповідає проблемі на прийманні або декодері клієнта; мережеві counters не виключають усі мережеві причини."
             if clock_uncertain:
                 text += " Впевненість знижена, бо синхронізацію годинників між точками не підтверджено."
         else:
@@ -542,6 +585,15 @@ def build_evidence_packet(incident: Any, related: list[Any]) -> dict[str, Any]:
         "RTT_SPIKE": "затримка мережі різко зросла", "STREAM_STALL": "потік перестав надходити",
         "SILENCE_START": "почалася тиша в аудіо", "AUDIO_MISSING": "відсутні аудіокадри",
     }
+    receiver_status_explanations = {
+        "NO_PROBE_PROCESS": "процес FFmpeg/ffprobe не був активний під час виміру",
+        "NO_MATCHING_FLOW": "активне IPv4 TCP-з'єднання probe до RTMP-хоста не знайдено",
+        "IPV4_UNAVAILABLE": "per-flow вимір доступний лише для IPv4-з'єднань",
+        "PERMISSION_DENIED": "Windows не дозволив увімкнути per-flow TCP counters",
+        "API_UNAVAILABLE": "Windows TCP EStats API недоступний",
+        "API_ERROR": "Windows не зміг прочитати per-flow TCP counters",
+        "HOST_RESOLUTION_FAILED": "не вдалося визначити IPv4-адресу RTMP-хоста",
+    }
     for sample in observations:
         offset = sample["seconds_from_current_incident"]
         moment = f"за {abs(offset):g} с до інциденту" if offset < 0 else f"через {offset:g} с від його початку"
@@ -561,8 +613,31 @@ def build_evidence_packet(incident: Any, related: list[Any]) -> dict[str, Any]:
             age = _number(network.get("sample_age_seconds"))
             sample_fact("network", f"{sample['probe']}: мережевий вимір був застарілий ({age:g} с); його counters не використані для локалізації причини.")
         else:
+            receiver_status = network.get("tcp_receiver_stats_status")
+            if receiver_status in receiver_status_explanations:
+                sample_fact(
+                    "network",
+                    f"{sample['probe']}: {receiver_status_explanations[receiver_status]}; per-flow TCP значення невідоме, не нульове.",
+                )
             if _number(network.get("tcp_retransmissions")) and network["tcp_retransmissions"] > 0:
                 sample_fact("network", f"{sample['probe']}: TCP retransmissions за інтервал = {network['tcp_retransmissions']:g}.")
+            if (
+                network.get("provider") == "windows"
+                and network.get("tcp_receiver_stats_status") == "AVAILABLE"
+                and (_number(network.get("tcp_receiver_stats_flow_count")) or 0) > 0
+                and _number(network.get("tcp_duplicate_ack_episodes")) is not None
+            ):
+                duplicate_ack_episodes = network["tcp_duplicate_ack_episodes"]
+                if duplicate_ack_episodes > 0:
+                    sample_fact(
+                        "network",
+                        f"{sample['probe']}: TCP-з'єднання FFmpeg до RTMP-сервера за інтервал зафіксувало {duplicate_ack_episodes:g} епізод(и) duplicate ACK; це сумісно з пропущеними або переставленими сегментами, але не показує відсоток втрат.",
+                    )
+                else:
+                    sample_fact(
+                        "network",
+                        f"{sample['probe']}: TCP-з'єднання FFmpeg до RTMP-сервера за інтервал не зафіксувало duplicate ACK episodes; це не виключає всіх мережевих проблем.",
+                    )
             if _number(network.get("packet_loss_percent")) and network["packet_loss_percent"] >= 50 and _number(network.get("icmp_reply_count")) and network["icmp_reply_count"] > 0:
                 sample_fact("network", f"{sample['probe']}: ICMP-втрата {network['packet_loss_percent']:g}% при наявних відповідях.")
             if _number(network.get("rtt_ms")) and network["rtt_ms"] > 100:

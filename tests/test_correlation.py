@@ -103,6 +103,20 @@ def test_windows_hostwide_retransmits_alone_do_not_prove_client_network_fault():
     assert "HOST-WIDE" in result["probable_location"]
 
 
+def test_windows_ffmpeg_receiver_duplicate_ack_episodes_support_network_fault():
+    result = diagnose_observations([
+        report("SERVER_EGRESS", "egress"),
+        report("CLIENT", "client", "CRITICAL", broken("FREEZE_START"), {
+            "provider": "windows", "tcp_retransmissions": 0, "rtt_ms": 4,
+            "tcp_state": "ESTABLISHED", "tcp_duplicate_ack_episodes": 2,
+            "tcp_duplicate_acks": 5, "tcp_receiver_stats_status": "AVAILABLE",
+            "tcp_receiver_stats_flow_count": 1,
+        }),
+    ])
+
+    assert result["diagnosis"] == "NETWORK_PATH_PROBLEM"
+
+
 def test_windows_retransmits_with_independent_rtt_spike_support_network_fault():
     result = diagnose_observations([
         report("SERVER_EGRESS", "egress"),

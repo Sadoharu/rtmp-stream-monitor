@@ -170,6 +170,9 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: .\tests\test_windows_python_discovery.ps1
+      - name: Exercise Windows per-flow TCP EStats on loopback
+        if: runner.os == 'Windows'
+        run: python scripts/live_windows_tcp_estats_smoke.py
       - name: Smoke test Windows service lifecycle
         if: runner.os == 'Windows'
         shell: pwsh

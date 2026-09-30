@@ -8,6 +8,8 @@ import subprocess
 import time
 from typing import Any
 
+from .windows_tcp import sample_windows_tcp_receiver_stats
+
 
 def _run(args: list[str], timeout: float = 2.0, env: dict[str, str] | None = None) -> str:
     try:
@@ -26,8 +28,9 @@ class NetworkTelemetry:
         self.last_sample_mono: float | None = None
         self.previous_system_retransmits: int | None = None
         self.previous_linux_flow_retransmits: int | None = None
+        self.previous_windows_receiver_stats: dict[str, tuple[int, int]] = {}
 
-    def sample(self) -> dict[str, Any]:
+    def sample(self, owner_pids: set[int] | None = None) -> dict[str, Any]:
         now = time.monotonic()
         if not self.enabled or not self.host:
             return {"available": False, "reason": "disabled or no server_host configured"}
@@ -41,7 +44,7 @@ class NetworkTelemetry:
         if system == "linux":
             result.update(self._linux_socket_stats())
         elif system == "windows":
-            result.update(self._windows_tcp_stats(now))
+            result.update(self._windows_tcp_stats(now, owner_pids))
         else:
             result["available"] = result["rtt_ms"] is not None
             result["reason"] = "TCP counters not implemented on this platform"
@@ -146,7 +149,7 @@ class NetworkTelemetry:
             "provider_note": "per-flow TCP_INFO via ss; retransmissions are interval deltas",
         }
 
-    def _windows_tcp_stats(self, now: float) -> dict[str, Any]:
+    def _windows_tcp_stats(self, now: float, owner_pids: set[int] | None = None) -> dict[str, Any]:
         script = "$s=Get-NetTCPStatistics -ErrorAction Stop; [pscustomobject]@{retrans=[int64]$s.SegmentsRetransmitted}|ConvertTo-Json -Compress"
         output = _run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], timeout=3)
         retrans = None
@@ -169,7 +172,42 @@ class NetworkTelemetry:
             timeout=3,
             env=command_env,
         ).strip() or "not-established"
-        return {"tcp_retransmissions": retrans, "tcp_state": state, "provider_note": "Windows retransmits are host-wide counter deltas; RTT and packet loss use ICMP"}
+        receiver = sample_windows_tcp_receiver_stats(self.host or "", self.port, owner_pids)
+        current_flows = {
+            flow["key"]: (
+                int(flow["duplicate_ack_episodes_total"]),
+                int(flow["duplicate_acks_total"]),
+            )
+            for flow in receiver["flows"]
+        }
+        episodes_delta = None
+        duplicate_acks_delta = None
+        if receiver["status"] == "AVAILABLE":
+            previous = self.previous_windows_receiver_stats
+            if current_flows.keys() == previous.keys():
+                episodes_delta = sum(
+                    (values[0] - previous[key][0]) & 0xFFFFFFFF
+                    for key, values in current_flows.items()
+                )
+                duplicate_acks_delta = sum(
+                    (values[1] - previous[key][1]) & 0xFFFFFFFF
+                    for key, values in current_flows.items()
+                )
+            self.previous_windows_receiver_stats = current_flows
+        else:
+            self.previous_windows_receiver_stats = {}
+        return {
+            "tcp_retransmissions": retrans,
+            "tcp_state": state,
+            "tcp_duplicate_ack_episodes": episodes_delta,
+            "tcp_duplicate_acks": duplicate_acks_delta,
+            "tcp_receiver_stats_status": receiver["status"],
+            "tcp_receiver_stats_flow_count": len(current_flows),
+            "provider_note": (
+                "Windows host-wide retransmit delta plus probe-process-owned IPv4 receiver EStats; "
+                "duplicate ACK episodes indicate missing or reordered segments, not a loss percentage"
+            ),
+        }
 
 
 def clock_status() -> dict[str, Any]:

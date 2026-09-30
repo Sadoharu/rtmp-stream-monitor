@@ -750,7 +750,7 @@ class AgentRunner:
 
     async def _refresh_environment_metrics(self) -> None:
         try:
-            network_sample = await asyncio.to_thread(self.network.sample)
+            network_sample = await asyncio.to_thread(self.network.sample, self._probe_process_ids())
             self._network_snapshot = {**network_sample, "sampled_at": utc_iso()}
         except Exception:
             self._network_snapshot = {"available": False, "reason": "provider error", "sampled_at": utc_iso()}
@@ -770,6 +770,17 @@ class AgentRunner:
             self._agent_rss_bytes = 0
         self._agent_metrics_sampled_at = utc_iso()
         self._last_network_mono = time.monotonic()
+
+    def _probe_process_ids(self) -> set[int]:
+        process_ids: set[int] = set()
+        for probe in self.probes:
+            process = getattr(probe, "process", None)
+            if process is None or getattr(process, "returncode", None) is not None:
+                continue
+            pid = getattr(process, "pid", None)
+            if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
+                process_ids.add(pid)
+        return process_ids
 
     def _shared_metrics(self) -> dict[str, Any]:
         now = time.monotonic()

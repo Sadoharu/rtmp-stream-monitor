@@ -54,6 +54,22 @@ def test_queued_sample_keeps_network_and_clock_metrics_from_observation_time(tmp
     assert queued["metrics"]["agent_metrics_sampled_at"] == "2026-09-28T10:00:02+00:00"
 
 
+def test_agent_exposes_only_running_probe_process_ids_for_per_flow_network_sampling(tmp_path):
+    config = AgentFileConfig.model_validate({
+        "server": {"url": "http://central.example:8090"},
+        "agent": {"name": "client-test", "token": "test-token"},
+        "streams": [{"id": "poland", "url": "rtmp://server.example/live/poland"}],
+        "state_dir": str(tmp_path / "state"),
+        "log_dir": str(tmp_path / "logs"),
+    })
+    runner = AgentRunner(config)
+    runner.probes[0].process = SimpleNamespace(pid=4200, returncode=None)
+    runner.probes.append(SimpleNamespace(process=SimpleNamespace(pid=4300, returncode=0)))
+    runner.probes.append(SimpleNamespace(process=None))
+
+    assert runner._probe_process_ids() == {4200}
+
+
 def test_ffmpeg_cpu_sampling_reuses_psutil_process_handle(tmp_path, monkeypatch):
     config = AgentFileConfig.model_validate({
         "server": {"url": "http://central.example:8090"},

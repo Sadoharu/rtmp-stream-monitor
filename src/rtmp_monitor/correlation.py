@@ -49,6 +49,13 @@ def _network_is_bad(observation: dict[str, Any]) -> bool:
         return False
     retransmits = network.get("tcp_retransmissions")
     tcp_state = str(network.get("tcp_state", "")).upper()
+    receiver_episodes = network.get("tcp_duplicate_ack_episodes")
+    receiver_stats_available = (
+        network.get("provider") == "windows"
+        and network.get("tcp_receiver_stats_status") == "AVAILABLE"
+        and isinstance(network.get("tcp_receiver_stats_flow_count"), (int, float))
+        and network["tcp_receiver_stats_flow_count"] > 0
+    )
     tcp_state_is_bad = bool(tcp_state and tcp_state not in {"ESTABLISHED", "ESTAB", "UNKNOWN"})
     sample_age = network.get("sample_age_seconds")
     frame_age = metrics.get("last_frame_age")
@@ -74,6 +81,7 @@ def _network_is_bad(observation: dict[str, Any]) -> bool:
         tcp_state_is_bad = False
     return bool(
         (network.get("provider") != "windows" and isinstance(retransmits, (int, float)) and retransmits > 0)
+        or (receiver_stats_available and isinstance(receiver_episodes, (int, float)) and receiver_episodes > 0)
         or icmp_loss_is_strong
         or (isinstance(network.get("rtt_ms"), (int, float)) and network["rtt_ms"] > 100)
         or tcp_state_is_bad

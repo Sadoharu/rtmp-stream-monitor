@@ -1,6 +1,9 @@
+import socket
+import struct
+
 import pytest
 
-from rtmp_monitor import network
+from rtmp_monitor import network, windows_tcp
 from rtmp_monitor.network import NetworkTelemetry
 
 
@@ -49,6 +52,131 @@ def test_windows_retransmit_delta_is_unknown_after_a_missed_sample(monkeypatch):
     assert missed["tcp_retransmissions"] is None
     assert after_gap["tcp_retransmissions"] is None
     assert recovered["tcp_retransmissions"] == 1
+
+
+def test_windows_receiver_duplicate_ack_metrics_are_per_flow_interval_deltas(monkeypatch):
+    samples = iter([
+        {"status": "AVAILABLE", "flows": [{"key": "123:local:1>remote:1935", "duplicate_ack_episodes_total": 2, "duplicate_acks_total": 6}]},
+        {"status": "AVAILABLE", "flows": [{"key": "123:local:1>remote:1935", "duplicate_ack_episodes_total": 4, "duplicate_acks_total": 11}]},
+        {"status": "NO_MATCHING_FLOW", "flows": []},
+        {"status": "AVAILABLE", "flows": [{"key": "123:local:2>remote:1935", "duplicate_ack_episodes_total": 8, "duplicate_acks_total": 30}]},
+    ])
+    calls = []
+
+    def fake_receiver(host, port, owner_pids):
+        calls.append((host, port, owner_pids))
+        return next(samples)
+
+    monkeypatch.setattr(network, "sample_windows_tcp_receiver_stats", fake_receiver)
+    monkeypatch.setattr(network, "_run", lambda args, **_kwargs: '{"retrans":0}' if "Get-NetTCPStatistics" in args[-1] else "Established")
+    telemetry = NetworkTelemetry("198.51.100.5", 1935)
+
+    first = telemetry._windows_tcp_stats(1.0, {123})
+    second = telemetry._windows_tcp_stats(2.0, {123})
+    no_flow = telemetry._windows_tcp_stats(3.0, {123})
+    reconnected = telemetry._windows_tcp_stats(4.0, {123})
+
+    assert first["tcp_duplicate_ack_episodes"] is None
+    assert second["tcp_duplicate_ack_episodes"] == 2
+    assert second["tcp_duplicate_acks"] == 5
+    assert no_flow["tcp_receiver_stats_status"] == "NO_MATCHING_FLOW"
+    assert no_flow["tcp_duplicate_ack_episodes"] is None
+    assert reconnected["tcp_duplicate_ack_episodes"] is None
+    assert calls == [("198.51.100.5", 1935, {123})] * 4
+
+
+def test_windows_receiver_stats_enable_collection_and_read_documented_fields():
+    class FakeApi:
+        def __init__(self):
+            self.reads = 0
+            self.enables = 0
+
+        def GetPerTcpConnectionEStats(self, _row, _kind, rw_pointer, *_args):
+            self.reads += 1
+            rw = windows_tcp.ctypes.cast(
+                rw_pointer, windows_tcp.ctypes.POINTER(windows_tcp._TcpEstatsRecRwV0),
+            ).contents
+            rod = windows_tcp.ctypes.cast(
+                _args[-3], windows_tcp.ctypes.POINTER(windows_tcp._TcpEstatsRecRodV0),
+            ).contents
+            rw.EnableCollection = 0 if self.reads == 1 else 1
+            rod.DupAckEpisodes = 2 if self.reads == 1 else 7
+            rod.DupAcksOut = 5 if self.reads == 1 else 19
+            return 0
+
+        def SetPerTcpConnectionEStats(self, _row, _kind, rw_pointer, *_args):
+            self.enables += 1
+            rw = windows_tcp.ctypes.cast(
+                rw_pointer, windows_tcp.ctypes.POINTER(windows_tcp._TcpEstatsRecRwV0),
+            ).contents
+            assert rw.EnableCollection == 1
+            return 0
+
+    api = FakeApi()
+    row = windows_tcp._MibTcpRow(5, 0, 0, 0, 0)
+
+    status, counters = windows_tcp._read_receiver_stats(api, row)
+
+    assert status == 0
+    assert counters.DupAckEpisodes == 7
+    assert counters.DupAcksOut == 19
+    assert api.reads == 2
+    assert api.enables == 1
+
+
+def test_windows_receiver_stats_keeps_permission_failure_unknown():
+    class FakeApi:
+        def GetPerTcpConnectionEStats(self, _row, _kind, rw_pointer, *_args):
+            rw = windows_tcp.ctypes.cast(
+                rw_pointer, windows_tcp.ctypes.POINTER(windows_tcp._TcpEstatsRecRwV0),
+            ).contents
+            rw.EnableCollection = 0
+            return 0
+
+        def SetPerTcpConnectionEStats(self, *_args):
+            return 5
+
+    status, counters = windows_tcp._read_receiver_stats(FakeApi(), windows_tcp._MibTcpRow(5, 0, 0, 0, 0))
+
+    assert status == 5
+    assert counters is None
+
+
+def test_windows_receiver_sampler_filters_exact_target_and_probe_pid(monkeypatch):
+    class FakeApi:
+        def GetPerTcpConnectionEStats(self, _row, _kind, rw_pointer, *_args):
+            rw = windows_tcp.ctypes.cast(
+                rw_pointer, windows_tcp.ctypes.POINTER(windows_tcp._TcpEstatsRecRwV0),
+            ).contents
+            rod = windows_tcp.ctypes.cast(
+                _args[-3], windows_tcp.ctypes.POINTER(windows_tcp._TcpEstatsRecRodV0),
+            ).contents
+            rw.EnableCollection = 1
+            rod.DupAckEpisodes = 3
+            rod.DupAcksOut = 8
+            return 0
+
+    def owner_row(pid, address="198.51.100.5", port=1935, local_port=40000):
+        return windows_tcp._MibTcpRowOwnerPid(
+            windows_tcp._MIB_TCP_STATE_ESTABLISHED,
+            struct.unpack("=I", socket.inet_aton("192.0.2.10"))[0],
+            socket.htons(local_port),
+            struct.unpack("=I", socket.inet_aton(address))[0],
+            socket.htons(port),
+            pid,
+        )
+
+    rows = [owner_row(123), owner_row(999), owner_row(123, port=1936)]
+    monkeypatch.setattr(windows_tcp, "_iphlpapi", FakeApi)
+    monkeypatch.setattr(windows_tcp, "_tcp_rows", lambda _api: (0, rows))
+
+    result = windows_tcp.sample_windows_tcp_receiver_stats("198.51.100.5", 1935, {123})
+
+    assert result["status"] == "AVAILABLE"
+    assert len(result["flows"]) == 1
+    assert result["flows"][0]["key"].startswith("123:192.0.2.10:40000>198.51.100.5:1935")
+    assert result["flows"][0]["duplicate_ack_episodes_total"] == 3
+    assert result["flows"][0]["duplicate_acks_total"] == 8
 
 
 def test_windows_ping_uses_structured_dotnet_output(monkeypatch):

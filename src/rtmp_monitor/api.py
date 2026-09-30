@@ -606,9 +606,10 @@ def create_app(config: CentralFileConfig | None = None, database_url: str | None
         sampled_ids = select(ranked_status.c.telemetry_id).where(ranked_status.c.sample_rank == 1)
 
         retransmits = network_metric("tcp_retransmissions")
+        duplicate_ack_episodes = network_metric("tcp_duplicate_ack_episodes")
         packet_loss = network_metric("packet_loss_percent")
         rtt = network_metric("rtt_ms")
-        network_problem = or_(retransmits > 0, packet_loss >= 50, rtt > 100)
+        network_problem = or_(retransmits > 0, duplicate_ack_episodes > 0, packet_loss >= 50, rtt > 100)
         network_score = case((network_problem, 1), else_=0)
         ranked_network = select(
             Telemetry.id.label("telemetry_id"),
@@ -1095,7 +1096,11 @@ def _probe_event_evidence(agent: Agent, item: Telemetry, details: dict[str, int 
         add(key, metrics.get(key), unit)
     network = metrics.get("network")
     if isinstance(network, dict):
-        for key, unit in (("tcp_retransmissions", "count"), ("rtt_ms", "ms"), ("packet_loss_percent", "%"), ("tcp_state", None), ("provider", None)):
+        for key, unit in (
+            ("tcp_retransmissions", "count"), ("tcp_duplicate_ack_episodes", "count"),
+            ("tcp_duplicate_acks", "count"), ("rtt_ms", "ms"),
+            ("packet_loss_percent", "%"), ("tcp_state", None), ("provider", None),
+        ):
             add(f"network.{key}", network.get(key), unit)
     return evidence
 
