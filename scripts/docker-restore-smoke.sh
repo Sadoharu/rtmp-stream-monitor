@@ -54,48 +54,61 @@ if [[ ! "$service_uid" =~ ^[0-9]+$ || ! "$service_gid" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 echo "Compose smoke service identity: $service_uid:$service_gid"
-mkdir -p secrets backups smoke-input/systemd-data smoke-input/systemd-logs smoke-input/systemd-snapshot smoke-input/rollback-data
+mkdir -p secrets backups smoke-input/rollback-data
 : > secrets/openai_api_key
 chmod 600 secrets/openai_api_key
 legacy_admin_token="legacy-admin-token-for-compose-smoke"
 legacy_agent_token="legacy-agent-token-for-compose-smoke"
-printf '%s\n' "$legacy_admin_token" > smoke-input/systemd-data/admin.token
-chmod 600 smoke-input/systemd-data/admin.token
-printf '%s\n' '{"event":"legacy-systemd-log"}' > smoke-input/systemd-logs/central.jsonl
 cat > .env <<EOF
 RTMP_MONITOR_PORT=$port
 RTMP_MONITOR_BIND_HOST=127.0.0.1
 RTMP_MONITOR_UID=$service_uid
 RTMP_MONITOR_GID=$service_gid
-RTMP_MONITOR_LEGACY_DATA_DIR=./smoke-input/systemd-snapshot
-RTMP_MONITOR_LEGACY_LOG_DIR=./smoke-input/systemd-logs
 EOF
 chmod 600 .env
 cat > docker-compose.smoke.yml <<'YAML'
+volumes:
+  smoke-systemd-data:
+  smoke-systemd-logs:
+
 services:
   central:
     volumes:
-      - ./smoke-input:/smoke-input
+      # Named volumes keep fixture I/O portable across Docker Desktop and
+      # hosted Linux runners, including runners with restricted bind mounts.
+      - smoke-systemd-data:/migration-data
+      - smoke-systemd-logs:/migration-logs
 YAML
 
-docker compose -f docker-compose.yml -f docker-compose.smoke.yml config -q
+compose_file_separator=":"
+case "$(uname -s)" in
+  MINGW*|MSYS*) compose_file_separator=";" ;;
+esac
+export COMPOSE_FILE="docker-compose.yml${compose_file_separator}docker-compose.smoke.yml"
+
+docker compose config -q
 echo "Building central image for isolated Compose project $project_name."
 docker compose build central
-cat > smoke-input/create-systemd-database.py <<'PY'
+echo "Creating an old-version systemd-style database and a verified migration snapshot."
+docker compose run --rm --no-deps -T --user 0 --entrypoint python central - <<'PY'
 import hashlib
-import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from rtmp_monitor.db import Agent, Base, Incident, Stream, Telemetry
 
-engine = create_engine("sqlite:////smoke-input/systemd-data/central.db")
+source_db = Path("/migration-data/systemd/central.db")
+source_db.parent.mkdir(parents=True, exist_ok=True)
+Path("/migration-data/admin.token").write_text("legacy-admin-token-for-compose-smoke\n", encoding="utf-8")
+Path("/migration-logs/central.jsonl").write_text('{"event":"legacy-systemd-log"}\n', encoding="utf-8")
+engine = create_engine(f"sqlite:///{source_db}")
 old_tables = [table for table in Base.metadata.sorted_tables if table.name != "probe_enrollments"]
 Base.metadata.create_all(engine, tables=old_tables)
 observed_at = datetime.now(timezone.utc) - timedelta(seconds=15)
-agent_token = os.environ["LEGACY_AGENT_TOKEN"]
+agent_token = "legacy-agent-token-for-compose-smoke"
 with Session(engine) as session:
     session.add(Stream(
         id="poland", name="Legacy Poland", local_url="rtmp://127.0.0.1/live/poland",
@@ -127,15 +140,10 @@ engine.dispose()
 print("Created a stopped systemd-style SQLite fixture with legacy stream, probe, telemetry, and incident rows.")
 PY
 
-echo "Creating an old-version systemd-style database and a verified migration snapshot."
-docker compose -f docker-compose.yml -f docker-compose.smoke.yml run --rm --no-deps -T --user 0 \
-  -e "LEGACY_AGENT_TOKEN=$legacy_agent_token" \
-  --entrypoint python central /smoke-input/create-systemd-database.py
-docker compose -f docker-compose.yml -f docker-compose.smoke.yml run --rm --no-deps -T --user 0 \
+docker compose run --rm --no-deps -T --user 0 \
   --entrypoint python central -m rtmp_monitor.docker_migration \
-  --snapshot-source /smoke-input/systemd-data/central.db \
-  --snapshot-target /smoke-input/systemd-snapshot/central.db
-install -m 600 smoke-input/systemd-data/admin.token smoke-input/systemd-snapshot/admin.token
+  --snapshot-source /migration-data/systemd/central.db \
+  --snapshot-target /migration-data/central.db
 
 echo "Initializing the isolated Compose named volumes from the systemd snapshot."
 bash ./scripts/docker-init-volumes.sh
@@ -328,13 +336,13 @@ services:
       RTMP_MONITOR_DATABASE_URL: sqlite:////var/lib/rtmp-monitor/central.db
       RTMP_MONITOR_ADMIN_TOKEN_FILE: /var/lib/rtmp-monitor/admin.token
 YAML
-docker compose -f docker-compose.yml -f docker-compose.rollback-smoke.yml config -q
-docker compose -f docker-compose.yml -f docker-compose.rollback-smoke.yml run \
+docker compose -f docker-compose.yml -f docker-compose.smoke.yml -f docker-compose.rollback-smoke.yml config -q
+docker compose -f docker-compose.yml -f docker-compose.smoke.yml -f docker-compose.rollback-smoke.yml run \
   --rm --no-deps -T --user 0 --cap-add CHOWN --cap-add DAC_OVERRIDE \
   --entrypoint python central -c \
   "import os; root='/var/lib/rtmp-monitor'; uid=$service_uid; gid=$service_gid; os.chown(root, uid, gid); [os.chown(os.path.join(root, name), uid, gid) for name in os.listdir(root)]; print(f'Rollback files owned by service identity {uid}:{gid}.')"
 echo "Starting the systemd-style central service from the rollback files."
-docker compose -f docker-compose.yml -f docker-compose.rollback-smoke.yml run \
+docker compose -f docker-compose.yml -f docker-compose.smoke.yml -f docker-compose.rollback-smoke.yml run \
   --detach --no-deps -T --name "$rollback_container" --user "$service_uid:$service_gid" \
   -p "127.0.0.1:$rollback_port:8091" \
   --entrypoint rtmp-monitor central server --config /etc/rtmp-monitor/systemd-smoke.yaml \
