@@ -18,6 +18,60 @@ function initialPlatform(): string {
   return /Windows/i.test(navigator.userAgent) ? "Windows" : "Ubuntu";
 }
 
+function probeGuidance(probe: Probe): { observation: string; nextStep: string; command?: string } | null {
+  const windows = /windows/i.test(probe.platform);
+  const serviceCheck = windows
+    ? 'Get-Service RtmpMonitorAgent; Get-ChildItem "$env:ProgramData\\RtmpMonitor\\logs" -Filter "*.jsonl" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | ForEach-Object { Get-Content -Tail 40 $_.FullName }'
+    : "sudo systemctl status rtmp-monitor-agent --no-pager; sudo journalctl -u rtmp-monitor-agent -n 40 --no-pager";
+
+  switch (probe.status) {
+    case "NEVER_SEEN":
+      return {
+        observation: "Після створення probe сервер ще не отримав від неї телеметрію. За цим станом не видно, чи інсталятор не завершився, чи комп’ютер не дістався сервера.",
+        nextStep: "Перевірте службу й журнал на цьому комп’ютері. Якщо одноразовий код прострочений або вже використаний, створіть нову probe з новим кодом.",
+        command: serviceCheck,
+      };
+    case "AGENT_OFFLINE":
+      return {
+        observation: `Probe ${probe.last_seen_age_seconds === null ? "ще не надсилала сигнал" : `не надсилала сигнал ${formatAge(probe.last_seen_age_seconds)}`}. Сервер не може визначити лише з цього, чи зупинилася служба, чи зник зв’язок із сервером моніторингу.`,
+        nextStep: "Перевірте службу на комп’ютері probe та доступність HTTPS-адреси Dashboard з цієї мережі.",
+        command: serviceCheck,
+      };
+    case "TELEMETRY_STALE":
+      return {
+        observation: `Зв’язок із probe є, але час останнього виміру — ${formatAge(probe.telemetry_age_seconds)}. Можлива затримка локальної черги або розбіжність годинника; цей стан сам по собі не визначає причину.`,
+        nextStep: "Перевірте системний час, стан служби та журнал агента; порівняйте час нових вимірів після перевірки.",
+        command: serviceCheck,
+      };
+    case "STREAM_OFFLINE":
+      return {
+        observation: "Probe надсилає дані, але її FFmpeg-процес або вхідний потік позначений як недоступний. Це ще не локалізує проблему до джерела, адреси чи мережі.",
+        nextStep: "Перевірте URL і роль probe та чи відкривається цей самий потік із комп’ютера probe.",
+        command: serviceCheck,
+      };
+    case "STREAM_STALLED":
+      return {
+        observation: "Probe надсилає телеметрію, але на цій точці довго не просуваються кадри.",
+        nextStep: "Перевірте потік і адресу з цього комп’ютера, потім порівняйте часову шкалу з іншими probe, щоб побачити, де зупиняється медіа.",
+        command: serviceCheck,
+      };
+    case "WARNING":
+    case "CRITICAL":
+      return {
+        observation: "Probe надсилає телеметрію зі статусом проблеми.",
+        nextStep: "Відкрийте графік і останню подію цієї probe: там будуть вимірювання, часові позначки та межі висновку.",
+      };
+    case "UNKNOWN":
+      return {
+        observation: "Зв’язок із probe є, але надійно класифікувати стан потоку поки не вдалося.",
+        nextStep: "Перевірте останній sample та події на графіку; за потреби звірте журнал агента на цій машині.",
+        command: serviceCheck,
+      };
+    default:
+      return null;
+  }
+}
+
 export function ProbeManager({ dashboard, onRefresh }: Props) {
   const [name, setName] = useState("");
   const [location, setLocation] = useState("");
@@ -203,6 +257,7 @@ fi`;
 }
 
 function ProbeCard({ probe, stream, removing, onRemove }: { probe: Probe; stream?: Stream; removing: boolean; onRemove: () => void }) {
+  const guidance = probeGuidance(probe);
   return <article className="probe-card">
     <div className="probe-card-top">
       <span className={`status-light status-${probe.status.toLowerCase()}`} />
@@ -210,6 +265,11 @@ function ProbeCard({ probe, stream, removing, onRemove }: { probe: Probe; stream
       <span className={`status-pill status-${probe.status.toLowerCase()}`}>{statusLabel(probe.status)}</span>
     </div>
     <div className="probe-card-meta"><span>{probe.platform}</span><span>{probe.location || "Локацію не задано"}</span><span>Останній сигнал: {formatAge(probe.last_seen_age_seconds)}</span></div>
+    {guidance && <div className="probe-guidance" role="note">
+      <strong>Що відомо</strong><p>{guidance.observation}</p>
+      <strong>Що перевірити</strong><p>{guidance.nextStep}</p>
+      {guidance.command && <code>{guidance.command}</code>}
+    </div>}
     <div className="probe-card-actions"><button className="button button-danger-quiet" disabled={removing} onClick={onRemove}>{removing ? "Відкликаємо…" : "Відкликати доступ"}</button></div>
   </article>;
 }
