@@ -65,7 +65,7 @@ docker compose up -d --force-recreate central
 docker compose ps
 ```
 
-Backup bundle містить узгоджену SQLite-копію та admin token; файл має права лише для власника. Зберігайте його поза сервером у захищеному сховищі. Bundle не містить `.env` і `secrets/openai_api_key`; зберігайте секрет окремо. Для оновлення зробіть backup, задайте потрібний тег образу у `.env` (наприклад, `RTMP_MONITOR_IMAGE=ghcr.io/sadoharu/rtmp-stream-monitor:0.1.1`) і виконайте `./docker-setup.sh`. Якщо образ цього тегу ще не опублікований, setup збере поточний checkout. Якщо нова версія несумісна з даними, поверніть попередній тег образу й виконайте restore.
+Backup bundle містить узгоджену SQLite-копію та admin token; файл має права лише для власника. Зберігайте його поза сервером у захищеному сховищі. Bundle не містить `.env` і `secrets/openai_api_key`; зберігайте секрет окремо. Для оновлення зробіть backup, задайте потрібний тег образу у `.env` (наприклад, `RTMP_MONITOR_IMAGE=ghcr.io/sadoharu/rtmp-stream-monitor:0.1.2`) і виконайте `./docker-setup.sh`. Якщо образ цього тегу ще не опублікований, setup збере поточний checkout. Якщо нова версія несумісна з даними, поверніть попередній тег образу й виконайте restore.
 
 #### Перенесення з наявного systemd сервера
 
