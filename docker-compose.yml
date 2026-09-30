@@ -8,7 +8,7 @@ secrets:
 
 services:
   central:
-    image: ${RTMP_MONITOR_IMAGE:-ghcr.io/sadoharu/rtmp-stream-monitor:0.1.0}
+    image: ${RTMP_MONITOR_IMAGE:-ghcr.io/sadoharu/rtmp-stream-monitor:0.1.1}
     pull_policy: missing
     build:
       context: .

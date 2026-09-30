@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rtmp-stream-monitor"
-version = "0.1.0"
+version = "0.1.1"
 description = "Continuous RTMP probe telemetry and incident correlation"
 requires-python = ">=3.10"
 dependencies = [

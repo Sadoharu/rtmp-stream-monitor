@@ -125,4 +125,10 @@ jobs:
       - name: Publish release assets
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes "$RUNNER_TEMP"/release-assets/*
+        run: |
+          notes_file="docs/releases/${GITHUB_REF_NAME}.md"
+          if [[ -f "$notes_file" ]]; then
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file "$notes_file" "$RUNNER_TEMP"/release-assets/*
+          else
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes "$RUNNER_TEMP"/release-assets/*
+          fi

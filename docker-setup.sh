@@ -34,7 +34,7 @@ if [[ ! -f .env ]]; then
 RTMP_MONITOR_PORT=$port
 RTMP_MONITOR_UID=$(id -u)
 RTMP_MONITOR_GID=$(id -g)
-# RTMP_MONITOR_IMAGE=ghcr.io/sadoharu/rtmp-stream-monitor:0.1.0
+# RTMP_MONITOR_IMAGE=ghcr.io/sadoharu/rtmp-stream-monitor:0.1.1
 # OPENAI_MODEL=gpt-6-luna
 EOF
   chmod 600 .env
