@@ -75,10 +75,28 @@ curl -fsS -X POST "$SERVER_URL/api/v2/probe-enrollments" \
 ENROLLMENT_CODE="$(jq -er '.code' "$WORK/enrollment.json")"
 printf '%s\n' "$ENROLLMENT_CODE" | sudo rtmp-monitor-agent-install --server "$SERVER_URL"
 
-sudo systemctl is-active --quiet rtmp-monitor-agent.service
-test -x /opt/rtmp-monitor-agent/.venv/bin/rtmp-monitor
-test -f /etc/rtmp-monitor-agent/agent.yaml
-[[ "$(stat -c '%a:%U:%G' /etc/rtmp-monitor-agent/agent.yaml)" == "640:root:rtmp-monitor" ]]
+service_active=0
+for _ in $(seq 1 10); do
+  if sudo systemctl is-active --quiet rtmp-monitor-agent.service; then
+    service_active=1
+    break
+  fi
+  sleep 1
+done
+if [[ "$service_active" != 1 ]]; then
+  sudo systemctl status --no-pager -l rtmp-monitor-agent.service >&2 || true
+  sudo journalctl -u rtmp-monitor-agent.service --no-pager -n 100 >&2 || true
+  cat "$WORK/central.log" >&2
+  echo "Enrolled Ubuntu agent service did not stay active" >&2
+  exit 1
+fi
+[[ -x /opt/rtmp-monitor-agent/.venv/bin/rtmp-monitor ]] || { echo "Agent executable was not installed" >&2; exit 1; }
+[[ -f /etc/rtmp-monitor-agent/agent.yaml ]] || { echo "Enrollment config was not saved" >&2; exit 1; }
+config_permissions="$(stat -c '%a:%U:%G' /etc/rtmp-monitor-agent/agent.yaml)"
+[[ "$config_permissions" == "640:root:rtmp-monitor" ]] || {
+  echo "Unexpected enrollment config permissions: $config_permissions" >&2
+  exit 1
+}
 
 telemetry_seen=0
 for _ in $(seq 1 30); do
