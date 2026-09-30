@@ -54,6 +54,10 @@ $logPath = Join-Path $logDir 'rtmp-monitor.jsonl'
 $originalPath = $env:PATH
 $expectedFfmpegPath = Join-Path $testBin 'ffmpeg.exe'
 $expectedFfprobePath = Join-Path $testBin 'ffprobe.exe'
+$rtmpListener = $null
+$rtmpAcceptTask = $null
+$rtmpClient = $null
+$rtmpPort = 1935
 
 try {
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
@@ -101,6 +105,13 @@ try {
     }
     $env:PATH = "$testBin;$env:PATH"
 
+    if ($UseInstalledFfmpeg) {
+        $rtmpListener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+        $rtmpListener.Start()
+        $rtmpPort = [int]$rtmpListener.LocalEndpoint.Port
+        $rtmpAcceptTask = $rtmpListener.AcceptTcpClientAsync()
+    }
+
     $logDirYaml = $logDir.Replace('\', '/')
     $stateDirYaml = $stateDir.Replace('\', '/')
     $testConfig = @"
@@ -114,9 +125,12 @@ agent:
   profile: LIGHT
 streams:
   - id: windows-installer-ci
-    url: rtmp://127.0.0.1:1935/live/windows-installer-ci
+    url: rtmp://127.0.0.1:$rtmpPort/live/windows-installer-ci
 network:
-  enabled: false
+  enabled: $($UseInstalledFfmpeg.ToString().ToLowerInvariant())
+  server_host: 127.0.0.1
+  server_port: $rtmpPort
+  ping_interval: 2
 state_dir: '$stateDirYaml'
 log_dir: '$logDirYaml'
 "@
@@ -171,6 +185,58 @@ log_dir: '$logDirYaml'
     }
     if ($logText -notmatch 'Started LIGHT probe subprocess for stream windows-installer-ci') {
         throw "Service did not launch the configured ffprobe executable. Log: $logPath"
+    }
+
+    if ($UseInstalledFfmpeg) {
+        if (-not $rtmpAcceptTask.Wait(10000)) {
+            throw 'The LocalSystem Windows service did not connect ffprobe to the loopback RTMP TCP sink.'
+        }
+        $rtmpClient = $rtmpAcceptTask.GetAwaiter().GetResult()
+        if (-not $rtmpClient.Connected) {
+            throw 'The LocalSystem ffprobe TCP connection was not established.'
+        }
+
+        $queuePath = Join-Path $stateDir 'agent_queue.db'
+        $queryOutbox = @'
+import json
+import sqlite3
+import sys
+
+with sqlite3.connect(sys.argv[1], timeout=3) as database:
+    rows = database.execute("SELECT payload FROM outbox ORDER BY id DESC LIMIT 100").fetchall()
+samples = []
+for (raw,) in rows:
+    try:
+        payload = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        continue
+    network = payload.get("metrics", {}).get("network", {})
+    samples.append({
+        "status": network.get("tcp_receiver_stats_status"),
+        "flow_count": network.get("tcp_receiver_stats_flow_count", 0),
+    })
+available = next((sample for sample in samples if sample["status"] == "AVAILABLE" and sample["flow_count"] > 0), None)
+print(json.dumps(available or {"status": "NOT_AVAILABLE", "samples": samples[:10]}))
+'@
+        $statsAvailable = $false
+        $lastStats = ''
+        $deadline = (Get-Date).AddSeconds(25)
+        while ((Get-Date) -lt $deadline) {
+            if (Test-Path -LiteralPath $queuePath) {
+                $lastStats = (& $cleanupPythonExe -c $queryOutbox $queuePath | Out-String).Trim()
+                if ($LASTEXITCODE -ne 0) { throw 'Could not read the Windows agent telemetry outbox.' }
+                try { $stats = $lastStats | ConvertFrom-Json } catch { throw "Invalid network telemetry from the service outbox: $lastStats" }
+                if ($stats.status -eq 'AVAILABLE' -and [int]$stats.flow_count -gt 0) {
+                    $statsAvailable = $true
+                    break
+                }
+            }
+            Start-Sleep -Seconds 1
+        }
+        if (-not $statsAvailable) {
+            throw "Installed LocalSystem service did not publish probe-owned receiver EStats for its live ffprobe flow. Last outbox query: $lastStats"
+        }
+        Write-Host "Installed LocalSystem service collected receiver EStats for $($stats.flow_count) live probe-owned TCP flow(s)."
     }
 
     if ($BundlePath) {
@@ -268,6 +334,8 @@ log_dir: '$logDirYaml'
             & sc.exe delete $serviceName | Out-Null
         }
     }
+    if ($rtmpClient) { $rtmpClient.Dispose() }
+    if ($rtmpListener) { $rtmpListener.Stop() }
     if ($programDirWasAbsent -and (Test-Path -LiteralPath $programDir)) {
         if ([System.IO.Path]::GetFullPath($programDir) -eq [System.IO.Path]::GetFullPath((Join-Path $env:ProgramFiles 'RTMPMonitor'))) {
             Remove-Item -LiteralPath $programDir -Recurse -Force
