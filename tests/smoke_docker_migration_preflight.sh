@@ -75,4 +75,42 @@ if [[ "$database_hash_before" != "$database_hash_after" || "$token_hash_before" 
   exit 1
 fi
 
+missing_output=""
+set +e
+missing_output="$(
+  RTMP_MONITOR_PREFLIGHT_DB="$fixture_dir/missing.db" \
+  RTMP_MONITOR_PREFLIGHT_TOKEN="$fixture_dir/missing.token" \
+    bash "$repo_root/scripts/docker-migration-preflight.sh"
+)"
+missing_status=$?
+set -e
+if [[ "$missing_status" -ne 2 ]] \
+  || ! grep -Fqx 'database=not_found' <<< "$missing_output" \
+  || ! grep -Fqx 'admin_token_file=not_found' <<< "$missing_output"; then
+  printf 'Preflight did not fail clearly for missing migration inputs (exit %s):\n%s\n' \
+    "$missing_status" "$missing_output" >&2
+  exit 1
+fi
+
+corrupt_database="$fixture_dir/corrupt.db"
+printf '%s' 'not a SQLite database' > "$corrupt_database"
+corrupt_hash_before="$(sha256sum "$corrupt_database" | cut -d ' ' -f 1)"
+corrupt_output=""
+set +e
+corrupt_output="$(
+  RTMP_MONITOR_PREFLIGHT_DB="$corrupt_database" \
+  RTMP_MONITOR_PREFLIGHT_TOKEN="$token_file" \
+    bash "$repo_root/scripts/docker-migration-preflight.sh"
+)"
+corrupt_status=$?
+set -e
+corrupt_hash_after="$(sha256sum "$corrupt_database" | cut -d ' ' -f 1)"
+if [[ "$corrupt_status" -ne 2 ]] \
+  || ! grep -Fqx 'sqlite_read_error=DatabaseError' <<< "$corrupt_output" \
+  || [[ "$corrupt_hash_before" != "$corrupt_hash_after" ]]; then
+  printf 'Preflight did not reject the corrupt database read-only (exit %s):\n%s\n' \
+    "$corrupt_status" "$corrupt_output" >&2
+  exit 1
+fi
+
 printf '%s\n' 'Read-only migration preflight smoke passed.'
