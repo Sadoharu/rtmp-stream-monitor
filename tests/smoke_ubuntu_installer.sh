@@ -85,8 +85,8 @@ if [[ "$service_active" != 1 ]]; then
   exit 1
 fi
 [[ -x /opt/rtmp-monitor-agent/.venv/bin/rtmp-monitor ]] || { echo "Agent executable was not installed" >&2; exit 1; }
-[[ -f /etc/rtmp-monitor-agent/agent.yaml ]] || { echo "Enrollment config was not saved" >&2; exit 1; }
-config_permissions="$(stat -c '%a:%U:%G' /etc/rtmp-monitor-agent/agent.yaml)"
+sudo test -f /etc/rtmp-monitor-agent/agent.yaml || { echo "Enrollment config was not saved" >&2; exit 1; }
+config_permissions="$(sudo stat -c '%a:%U:%G' /etc/rtmp-monitor-agent/agent.yaml)"
 [[ "$config_permissions" == "640:root:rtmp-monitor" ]] || {
   echo "Unexpected enrollment config permissions: $config_permissions" >&2
   exit 1
