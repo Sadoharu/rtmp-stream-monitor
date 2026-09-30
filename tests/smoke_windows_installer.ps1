@@ -218,12 +218,14 @@ for (raw,) in rows:
 available = next((sample for sample in samples if sample["status"] == "AVAILABLE" and sample["flow_count"] > 0), None)
 print(json.dumps(available or {"status": "NOT_AVAILABLE", "samples": samples[:10]}))
 '@
+        $queryScriptPath = Join-Path $tempRoot 'read-agent-network.py'
+        Set-Content -LiteralPath $queryScriptPath -Value $queryOutbox -Encoding utf8
         $statsAvailable = $false
         $lastStats = ''
         $deadline = (Get-Date).AddSeconds(25)
         while ((Get-Date) -lt $deadline) {
             if (Test-Path -LiteralPath $queuePath) {
-                $lastStats = (& $cleanupPythonExe -c $queryOutbox $queuePath | Out-String).Trim()
+                $lastStats = (& $cleanupPythonExe $queryScriptPath $queuePath | Out-String).Trim()
                 if ($LASTEXITCODE -ne 0) { throw 'Could not read the Windows agent telemetry outbox.' }
                 try { $stats = $lastStats | ConvertFrom-Json } catch { throw "Invalid network telemetry from the service outbox: $lastStats" }
                 if ($stats.status -eq 'AVAILABLE' -and [int]$stats.flow_count -gt 0) {
