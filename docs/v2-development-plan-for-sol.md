@@ -129,6 +129,8 @@ Docker Compose для центрального сервера спираєтьс
 
 **Додатковий доказ M5 (30.09.2026):** [GitHub Actions run 36653791462](https://github.com/Sadoharu/rtmp-stream-monitor/actions/runs/36653791462) встановив Gyan FFmpeg 9.0.2 через WinGet, виконав реальні ffmpeg/ffprobe, поставив bundled Windows agent без окремого системного Python, запустив Windows-службу з ffprobe та успішно видалив службу й локальні файли. GitHub Release відсутній, тож wizard поки переходить на source fallback.
 
+**Перевірка Ubuntu upgrade в CI (30.09.2026):** [GitHub Actions run 36657785617](https://github.com/Sadoharu/rtmp-stream-monitor/actions/runs/36657785617) успішно виконав .deb clean install → одноразовий enrollment → активну systemd-службу й телеметрію → apt upgrade 0.1.0 до 0.1.1 → purge. Перевірено незмінність SHA-256 enrollment-конфіга, повторний старт служби, новий last_seen_at після оновлення, збереження тестового файла в /var/lib під час upgrade і purge та збереження probe на central. Smoke виявив і виправив вкладений apt виклик під dpkg lock: інсталятор порівнював імена python3.10 та python3 замість канонічних шляхів до того самого інтерпретатора. Це hosted CI; production install/migration/rollback лишаються відкритими.
+
 ### M6 — наскрізна перевірка й випуск — частково виконано
 
 Перевірити на реальному RTMP сервері з локальним server egress і щонайменше двома клієнтськими probe (Windows та Ubuntu, якщо доступні), включно з перепідключенням, просіданням бітрейту, freeze, помилкою декодування, втратами телеметрії, зсувом годинника, рестартом і оновленням. Додати автоматичні перевірки агрегацій/API/UI/інсталяторів і коротку операторську інструкцію. **Приймання:** графік і події збігаються за часом; встановлення/оновлення/видалення відтворювані; система не приписує доведену причину без належних доказів.
@@ -148,7 +150,7 @@ Docker Compose для центрального сервера спираєтьс
 - [ ] Перевірити на фізично незалежних хостах: `SERVER_EGRESS` та клієнти з інших Windows/Ubuntu мереж. Loopback сценарії цього не підтверджують.
 - [x] Повторно відтворити пошкодження H.264-пакетів, `DECODE_ERROR` у `DEEP` і відновлення декодування/бітрейту; деталі й команда — у звіті M6.
 - [ ] Перевірити діагностику packet loss на незалежних production-подібних probe й нижчих рівнях втрат: локально `tc netem` 50% дав `NETWORK_PATH_PROBLEM`; після часового фільтра два прогони на 20% дали змішаний результат — один без діагнозу при 240 drops, інший з `UNCONFIRMED` за PTS lag 5.731 s при 211 drops. На 10% було 53 drops без мережевого діагнозу чи підтвердженої медіапроблеми. Повторюваність і межа чутливості не визначені; точний packet-loss rate продукт не вимірює, а bitstream corruption не є network packet loss.
-- [ ] Перевірити цільові production install/upgrade, міграцію Ubuntu systemd бази та rollback. Ubuntu smoke запускався в Docker Desktop на Windows, а не на сервері користувача.
+- [ ] Перевірити цільові production install/upgrade, міграцію Ubuntu systemd бази та rollback. GitHub Actions Ubuntu 22.04 уже перевіряє пакетний install/upgrade/purge на чистому runner, але це не перевіряє міграцію існуючої бази та rollback на production-сервері.
 
 Деталі — у [M6 live validation](m6-live-validation.md).
 
