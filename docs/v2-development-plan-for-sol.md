@@ -133,6 +133,8 @@ Docker Compose для центрального сервера спираєтьс
 
 **Preflight M4:** перед production-кроком додано [read-only migration preflight](../scripts/docker-migration-preflight.sh). На Linux container fixture він перевірив Docker-independent звіт, SQLite `quick_check`, кількості рядків та незмінність SHA-256 DB/token після запуску. Скрипт ще не виконувався на цільовому Ubuntu-сервері; відповідні дані потрібні, щоб узгодити реальну міграцію й rollback.
 
+**Автоматична перевірка preflight (30.09.2026):** Bash smoke створює тимчасову SQLite fixture і тестовий token, перевіряє `quick_check`, точні кількості рядків, що вивід не містить token, та що DB/token SHA-256 не змінилися. `bash -n` і smoke пройшли у Docker Python 3.12 Linux container; smoke під'єднаний до Ubuntu pytest job. Цей тест гарантує read-only поведінку на fixture, але не доводить готовність чи успішність міграції production-хоста.
+
 **Підтвердження M4 у hosted CI (30.09.2026):** після переносу тестової fixture з bind mount у тимчасові named volumes коміт `7512a33` пройшов повний Tests run [36671246902](https://github.com/Sadoharu/rtmp-stream-monitor/actions/runs/36671246902); central image publish/build run [36671246929](https://github.com/Sadoharu/rtmp-stream-monitor/actions/runs/36671246929) також успішний. Реальна міграція/відкат production сервера досі потребує окремої перевірки.
 
 ### M5 — просте додавання та життєвий цикл probe — частково виконано

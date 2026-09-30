@@ -176,9 +176,11 @@ jobs:
           cache: pip
       - name: Install project and test dependencies
         run: python -m pip install -e ".[test,windows-service]"
-      - name: Check Ubuntu installer shell syntax
+      - name: Check Ubuntu installer syntax and migration preflight
         if: runner.os == 'Linux'
-        run: bash -n install.sh install-server.sh install-agent.sh scripts/docker-migration-preflight.sh
+        run: |
+          bash -n install.sh install-server.sh install-agent.sh scripts/docker-migration-preflight.sh tests/smoke_docker_migration_preflight.sh
+          bash tests/smoke_docker_migration_preflight.sh
       - name: Run test suite
         run: python -m pytest
       - name: Test Windows Python discovery
