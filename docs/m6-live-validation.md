@@ -168,3 +168,9 @@ Reproduce with:
 ```powershell
 py -3.12 scripts/live-client-outage-smoke.py --packet-loss-percent 50 --outage-after 6 --outage-duration 8 --recovery-timeout 35 --require-event NETWORK_PATH_PROBLEM
 ```
+
+## Four-probe history chart load — 2026-09-30
+
+`scripts/benchmark-series-load.py` created an isolated temporary SQLite fixture with four probes, 345,600 raw measurements covering 24 hours, and 40,320 aggregate rows covering seven days. The 24-hour API query returned 38,400 points at an actual 9-second resolution in 1.891 seconds (9,831,433 response bytes). The seven-day query returned 39,660 aggregate points at an actual 61-second resolution in 1.021 seconds (10,234,898 response bytes).
+
+With `--serve --port 18092`, the local dashboard rendered the fixture in the browser. Both the 24-hour and seven-day controls displayed all four probe lines; the event section listed the seeded freeze-start and recovery events. Switching ranges completed without a visible error or hang. The test process was stopped and its temporary fixture removed afterward. These are local fixture/API measurements, not a production-hardware capacity claim, and they do not establish live network rendering latency.
