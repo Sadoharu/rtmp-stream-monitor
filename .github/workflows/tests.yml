@@ -67,11 +67,11 @@ jobs:
           if-no-files-found: error
 
   docker-compose-smoke:
-    name: Docker Compose backup / restore
+    name: Docker Compose migration / backup / rollback
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
-      - name: Exercise Compose build, health, backup, restore, and restart
+      - name: Exercise systemd migration, agent compatibility, backup, restore, and rollback
         shell: bash
         run: bash scripts/docker-restore-smoke.sh
 

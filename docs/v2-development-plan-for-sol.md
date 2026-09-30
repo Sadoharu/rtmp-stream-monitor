@@ -123,6 +123,8 @@ Docker Compose для центрального сервера спираєтьс
 
 **Оновлений доказ M4 (30.09.2026):** регресійний тест імпортує повну схему попередньої версії без enrollment-таблиці, читає збережені bitrate та події через поточний API, перевіряє старий ingest token і створює enrollment у новій таблиці. Коміт `3f21842` пройшов повний GitHub Actions Tests run `36651027447`; central image build run `36651027385` також успішний. Перевірка на production Ubuntu та rollback ще відкриті. Деталі: [M4 Docker Compose](m4-docker-compose.md).
 
+**Ізольований end-to-end доказ M4 (30.09.2026):** локальний Docker Desktop прогін пройшов міграцію старої systemd-style SQLite бази у named volume, читання bitrate/events/incident через Compose API, подачу телеметрії старим agent token, backup/restore, restart і запуск systemd-style сервісу з експортованої для rollback пари DB/token. Він перевіряє сценарій fixture з поточним образом; реальна міграція Ubuntu-хоста, доступність сервісу з його мережі та rollback на старий production binary лишаються відкритими. Подробиці у [звіті M4](m4-docker-compose.md); цей прогін також додано до Docker Compose CI smoke.
+
 ### M5 — просте додавання та життєвий цикл probe — частково виконано
 
 Майстер enrollment, Windows installer, Ubuntu package, стан підключення, оновлення, відкликання токена й видалення. **Приймання:** Windows-клієнт підключається без окремої установки Python і правки YAML; оператор бачить причину помилки, якщо probe не з'єднався; після uninstall служби і файлів агента немає, історія на сервері лишається доступною за політикою збереження.

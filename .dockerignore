@@ -10,6 +10,9 @@ dist
 data
 logs
 backups
+smoke-input
+docker-compose.smoke.yml
+docker-compose.rollback-smoke.yml
 .env
 tests
 docs
