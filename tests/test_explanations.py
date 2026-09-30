@@ -226,6 +226,50 @@ def test_client_decoder_error_with_clean_per_flow_tcp_is_not_called_network_faul
     assert packet["causal_analysis"]["cause_key"] == "CLIENT_RECEIVE_OR_DECODER"
 
 
+def test_stale_network_counters_are_neither_cause_evidence_nor_current_facts():
+    now = datetime.now(timezone.utc)
+    incident = _incident(context={"timeline": [
+        {"timestamp": now.isoformat(), "agent": "server", "role": "SERVER_EGRESS", "status": "OK",
+         "metrics": {"profile": "DEEP", "last_frame_age": 0.1, "fps": 50,
+                     "clock": {"ntp_synchronized": True}}, "events": []},
+        {"timestamp": (now + timedelta(seconds=1)).isoformat(), "agent": "client", "role": "CLIENT", "status": "WARNING",
+         "metrics": {"profile": "DEEP", "last_frame_age": 5,
+                     "network": {"provider": "linux", "tcp_state": "ESTABLISHED", "tcp_retransmissions": 4,
+                                 "rtt_ms": 182, "packet_loss_percent": 66.7, "icmp_reply_count": 1,
+                                 "sample_age_seconds": 21, "sample_interval_seconds": 10},
+                     "clock": {"ntp_synchronized": True}},
+         "events": [{"code": "FREEZE_START", "severity": "WARNING", "details": {}}]},
+    ]})
+
+    packet = explanations.build_evidence_packet(incident, [])
+    result = explanations.deterministic_explanation(packet)
+    network_facts = [item["fact"] for item in packet["evidence"] if item["category"] == "network"]
+
+    assert result["cause_key"] == "DOWNSTREAM_PATH_UNCONFIRMED"
+    assert any("застарілий (21 с)" in fact and "не використані" in fact for fact in network_facts)
+    assert not any("retransmissions за інтервал" in fact or "RTT = 182" in fact or "ICMP-втрата" in fact for fact in network_facts)
+
+
+def test_stale_zero_retransmit_sample_does_not_exonerate_network_for_decode_fault():
+    now = datetime.now(timezone.utc)
+    incident = _incident(context={"timeline": [
+        {"timestamp": now.isoformat(), "agent": "server", "role": "SERVER_EGRESS", "status": "OK",
+         "metrics": {"profile": "DEEP", "last_frame_age": 0.1, "fps": 50,
+                     "clock": {"ntp_synchronized": True}}, "events": []},
+        {"timestamp": (now + timedelta(seconds=1)).isoformat(), "agent": "client", "role": "CLIENT", "status": "WARNING",
+         "metrics": {"profile": "DEEP", "decode_errors": 1,
+                     "network": {"provider": "linux", "tcp_state": "ESTABLISHED", "tcp_retransmissions": 0,
+                                 "sample_age_seconds": 21, "sample_interval_seconds": 10},
+                     "clock": {"ntp_synchronized": True}},
+         "events": [{"code": "DECODE_ERROR", "severity": "WARNING", "details": {}}]},
+    ]})
+
+    packet = explanations.build_evidence_packet(incident, [])
+
+    assert packet["causal_analysis"]["cause_key"] == "DOWNSTREAM_PATH_UNCONFIRMED"
+    assert not any("0 повторних передач" in item["fact"] for item in packet["evidence"])
+
+
 def test_matching_upstream_media_error_localizes_source_ingest():
     now = datetime.now(timezone.utc)
     error = [{"code": "PTS_REGRESSION", "severity": "WARNING", "details": {"previous_pts": 10, "pts": 9}}]

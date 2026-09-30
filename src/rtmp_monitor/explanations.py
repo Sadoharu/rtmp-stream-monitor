@@ -8,6 +8,8 @@ from typing import Any
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from .network_evidence import network_sample_is_stale
+
 
 ROLES = {"SOURCE", "SERVER_INGRESS", "SERVER_EGRESS", "CLIENT"}
 STATUSES = {"OK", "WARNING", "CRITICAL", "ERROR", "STREAM_OFFLINE", "STREAM_STALLED", "AGENT_OFFLINE", "TELEMETRY_STALE"}
@@ -147,9 +149,7 @@ def _has_useful_network_sample(metrics: dict[str, Any]) -> bool:
     network = metrics.get("network")
     if not isinstance(network, dict):
         return False
-    age = _number(network.get("sample_age_seconds"))
-    interval = _number(network.get("sample_interval_seconds"))
-    if age is not None and age > max((interval or 0) * 2, 15):
+    if network_sample_is_stale(network):
         return False
     if _number(network.get("tcp_retransmissions")) is not None:
         return True
@@ -210,6 +210,8 @@ def _network_fault(sample: dict[str, Any]) -> tuple[bool, bool]:
     codes = {event.get("code") for event in sample.get("events", [])}
     if codes & NETWORK_EVENT_CODES:
         return True, False
+    if network_sample_is_stale(network):
+        return False, False
     retransmits = _number(network.get("tcp_retransmissions"))
     provider = str(network.get("provider", "")).lower()
     if retransmits is not None and retransmits > 0:
@@ -220,10 +222,7 @@ def _network_fault(sample: dict[str, Any]) -> tuple[bool, bool]:
     if (_number(network.get("rtt_ms")) or 0) > 100:
         return True, False
     tcp_state = str(network.get("tcp_state", "")).upper()
-    sample_age = _number(network.get("sample_age_seconds"))
-    sample_interval = _number(network.get("sample_interval_seconds"))
-    stale = sample_age is not None and sample_age > max((sample_interval or 0) * 2, 15)
-    if tcp_state and tcp_state not in {"ESTABLISHED", "ESTAB", "UNKNOWN"} and not stale:
+    if tcp_state and tcp_state not in {"ESTABLISHED", "ESTAB", "UNKNOWN"}:
         return True, False
     return False, False
 
@@ -321,6 +320,7 @@ def _episode_assessment(packet: dict[str, Any], episode: dict[str, Any]) -> dict
         client_has_decode_error = bool("DECODE_ERROR" in client_codes or any((_number(sample.get("metrics", {}).get("decode_errors")) or 0) > 0 for sample in client_faults))
         clean_flow_network = any(
             sample.get("metrics", {}).get("network", {}).get("provider") == "linux"
+            and not network_sample_is_stale(sample.get("metrics", {}).get("network", {}))
             and str(sample.get("metrics", {}).get("network", {}).get("tcp_state", "")).upper() in {"ESTABLISHED", "ESTAB"}
             and _number(sample.get("metrics", {}).get("network", {}).get("tcp_retransmissions")) == 0
             for sample in by_role["CLIENT"]
@@ -557,15 +557,19 @@ def build_evidence_packet(incident: Any, related: list[Any]) -> dict[str, Any]:
             sample_fact("decoder", f"{sample['probe']}: лічильник помилок декодера = {metrics['decode_errors']}.")
         if _number(metrics.get("last_frame_age")) and metrics["last_frame_age"] >= 3:
             sample_fact("media", f"{sample['probe']}: останній відеокадр був {metrics['last_frame_age']:g} с тому.")
-        if _number(network.get("tcp_retransmissions")) and network["tcp_retransmissions"] > 0:
-            sample_fact("network", f"{sample['probe']}: TCP retransmissions за інтервал = {network['tcp_retransmissions']:g}.")
-        if _number(network.get("packet_loss_percent")) and network["packet_loss_percent"] >= 50 and _number(network.get("icmp_reply_count")) and network["icmp_reply_count"] > 0:
-            sample_fact("network", f"{sample['probe']}: ICMP-втрата {network['packet_loss_percent']:g}% при наявних відповідях.")
-        if _number(network.get("rtt_ms")) and network["rtt_ms"] > 100:
-            sample_fact("network", f"{sample['probe']}: RTT = {network['rtt_ms']:g} мс.")
-        if network.get("tcp_state") and network["tcp_state"].upper() not in {"ESTABLISHED", "ESTAB", "UNKNOWN"}:
-            sample_fact("network", f"{sample['probe']}: стан TCP = {network['tcp_state']}.")
-        if _has_useful_network_sample(metrics):
+        if network_sample_is_stale(network):
+            age = _number(network.get("sample_age_seconds"))
+            sample_fact("network", f"{sample['probe']}: мережевий вимір був застарілий ({age:g} с); його counters не використані для локалізації причини.")
+        else:
+            if _number(network.get("tcp_retransmissions")) and network["tcp_retransmissions"] > 0:
+                sample_fact("network", f"{sample['probe']}: TCP retransmissions за інтервал = {network['tcp_retransmissions']:g}.")
+            if _number(network.get("packet_loss_percent")) and network["packet_loss_percent"] >= 50 and _number(network.get("icmp_reply_count")) and network["icmp_reply_count"] > 0:
+                sample_fact("network", f"{sample['probe']}: ICMP-втрата {network['packet_loss_percent']:g}% при наявних відповідях.")
+            if _number(network.get("rtt_ms")) and network["rtt_ms"] > 100:
+                sample_fact("network", f"{sample['probe']}: RTT = {network['rtt_ms']:g} мс.")
+            if network.get("tcp_state") and network["tcp_state"].upper() not in {"ESTABLISHED", "ESTAB", "UNKNOWN"}:
+                sample_fact("network", f"{sample['probe']}: стан TCP = {network['tcp_state']}.")
+        if _has_useful_network_sample(metrics) and not network_sample_is_stale(network):
             if network.get("provider") == "linux" and network.get("tcp_state", "").upper() in {"ESTABLISHED", "ESTAB"} and _number(network.get("tcp_retransmissions")) == 0:
                 sample_fact("network", f"{sample['probe']}: Linux зафіксував активне TCP-з'єднання і 0 повторних передач за цей інтервал; цей вимір не виключає всіх проблем доставки.")
             elif network.get("provider") == "windows" and _number(network.get("tcp_retransmissions")) == 0:

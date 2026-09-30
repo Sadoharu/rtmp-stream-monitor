@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .db import AggregateCursor, Agent, Incident, MetricAggregate, Telemetry, utcnow
+from .network_evidence import network_sample_is_stale
 
 BAD_EVENT_CODES = {
     "KEYFRAME_GAP", "DECODE_ERROR", "BITSTREAM_PARSE_ERROR", "FREEZE_START", "STREAM_STALL", "FFMPEG_DEAD",
@@ -17,15 +18,6 @@ BAD_EVENT_CODES = {
     "SILENCE_START", "AUDIO_MISSING", "AV_TIMESTAMP_DRIFT", "FFMPEG_RESTART", "AGENT_OFFLINE", "STREAM_OFFLINE",
 }
 NETWORK_EVENT_CODES = {"TCP_RETRANSMISSION", "TCP_RESET", "PACKET_LOSS", "RTT_SPIKE", "CONNECTION_RESET"}
-
-
-def _network_sample_is_stale(network: dict[str, Any]) -> bool:
-    sample_age = network.get("sample_age_seconds")
-    if not isinstance(sample_age, (int, float)):
-        return False
-    sample_interval = network.get("sample_interval_seconds")
-    max_age = max(float(sample_interval) * 2, 15.0) if isinstance(sample_interval, (int, float)) else 30.0
-    return sample_age > max_age
 
 
 def _errors(observation: dict[str, Any]) -> list[dict[str, Any]]:
@@ -53,7 +45,7 @@ def _network_is_bad(observation: dict[str, Any]) -> bool:
     network = metrics.get("network") or {}
     if any(event.get("code") in NETWORK_EVENT_CODES for event in observation.get("events") or []):
         return True
-    if _network_sample_is_stale(network):
+    if network_sample_is_stale(network):
         return False
     retransmits = network.get("tcp_retransmissions")
     tcp_state = str(network.get("tcp_state", "")).upper()
@@ -92,7 +84,7 @@ def _has_unattributed_windows_retransmits(observation: dict[str, Any]) -> bool:
     network = (observation.get("metrics") or {}).get("network") or {}
     retransmits = network.get("tcp_retransmissions")
     return (
-        not _network_sample_is_stale(network)
+        not network_sample_is_stale(network)
         and network.get("provider") == "windows"
         and isinstance(retransmits, (int, float))
         and retransmits > 0
