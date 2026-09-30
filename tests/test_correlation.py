@@ -226,7 +226,7 @@ def test_tcp_not_established_after_last_frame_supports_network_fault():
     assert result["diagnosis"] == "NETWORK_PATH_PROBLEM"
 
 
-def test_client_only_media_error_without_network_evidence_points_to_client():
+def test_client_media_error_without_positive_network_signal_keeps_client_problem_bucket():
     ingress = report("SERVER_INGRESS", "ingress")
     egress = report("SERVER_EGRESS", "egress")
     client = report("CLIENT", "client", "CRITICAL", broken("FREEZE_START"), {"tcp_retransmissions": 0, "rtt_ms": 4, "packet_loss_percent": 0})
@@ -235,6 +235,20 @@ def test_client_only_media_error_without_network_evidence_points_to_client():
     client["metrics"]["last_media_pts"] = 20
     result = diagnose_observations([ingress, egress, client])
     assert result["diagnosis"] == "CLIENT_PROBLEM"
+
+
+def test_windows_permission_denied_does_not_claim_network_counters_are_clear():
+    client = report("CLIENT", "client", "WARNING", broken("FREEZE_START"), {
+        "provider": "windows",
+        "tcp_retransmissions": 0,
+        "tcp_receiver_stats_status": "PERMISSION_DENIED",
+        "tcp_receiver_stats_flow_count": 0,
+    })
+    result = diagnose_observations([report("SERVER_EGRESS", "egress"), client])
+
+    assert result["diagnosis"] == "CLIENT_PROBLEM"
+    assert "flow-level network evidence unavailable" in result["probable_location"]
+    assert "counters show no" not in result["probable_location"]
 
 
 def test_light_bitstream_parse_error_is_a_client_media_symptom_not_a_decode_claim():

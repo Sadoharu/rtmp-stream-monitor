@@ -99,6 +99,25 @@ def _has_unattributed_windows_retransmits(observation: dict[str, Any]) -> bool:
     )
 
 
+def _has_current_flow_network_sample(observation: dict[str, Any]) -> bool:
+    network = (observation.get("metrics") or {}).get("network") or {}
+    if network_sample_is_stale(network):
+        return False
+    if network.get("provider") == "windows":
+        return (
+            network.get("tcp_receiver_stats_status") == "AVAILABLE"
+            and isinstance(network.get("tcp_receiver_stats_flow_count"), (int, float))
+            and network["tcp_receiver_stats_flow_count"] > 0
+            and isinstance(network.get("tcp_duplicate_ack_episodes"), (int, float))
+        )
+    if network.get("provider") == "linux":
+        return (
+            str(network.get("tcp_state", "")).upper() in {"ESTABLISHED", "ESTAB"}
+            and isinstance(network.get("tcp_retransmissions"), (int, float))
+        )
+    return False
+
+
 def diagnose_observations(observations: list[dict[str, Any]], media_tolerance_seconds: float = 5.0) -> dict[str, Any] | None:
     """Classify a fault only to the strongest location supported by current probes."""
     by_role: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -177,7 +196,10 @@ def diagnose_observations(observations: list[dict[str, Any]], media_tolerance_se
             location = "CLIENT OBSERVATION IS DEGRADED, BUT SERVER_EGRESS IS NOT OBSERVED; CLIENT, SERVER RESTREAM, AND UPSTREAM CAUSES CANNOT BE SEPARATED"
         else:
             diagnosis = "CLIENT_PROBLEM"
-            location = "CLIENT RECEIVE / DECODER (network counters do not show a transport fault)"
+            if any(_has_current_flow_network_sample(item) for item in bad_clients):
+                location = "CLIENT RECEIVE / DECODER (available flow counters show no positive transport-fault evidence)"
+            else:
+                location = "CLIENT RECEIVE / DECODER OR DOWNSTREAM NETWORK PATH (flow-level network evidence unavailable)"
         affected = bad_clients
     else:
         return None

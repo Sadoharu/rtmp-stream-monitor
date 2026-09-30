@@ -600,6 +600,14 @@ def main() -> int:
                     f"{after.get('received_media_bitrate_bps')} bps; reconnects "
                     f"{before.get('reconnect_count', 0)} -> {after.get('reconnect_count', 0)}"
                 )
+                network = after.get("network") or {}
+                print(
+                    f"  network provider={network.get('provider')}; "
+                    f"receiver EStats={network.get('tcp_receiver_stats_status')}; "
+                    f"flows={network.get('tcp_receiver_stats_flow_count')}; "
+                    f"duplicate ACK episodes={network.get('tcp_duplicate_ack_episodes')}; "
+                    f"TCP retransmissions={network.get('tcp_retransmissions')}"
+                )
             egress_row = next(
                 (row for row in series_result.get("series", []) if row.get("probe", {}).get("id") == egress_id),
                 {},
@@ -625,6 +633,11 @@ def main() -> int:
                     f"{event.get('code')} confidence={event.get('confidence', 'not provided by endpoint')} "
                     f"location={event.get('probable_location') or 'not localized'}"
                 )
+                for evidence in event.get("evidence", [])[:8]:
+                    print(
+                        f"    evidence {evidence.get('metric')}={evidence.get('value')} "
+                        f"{evidence.get('unit') or ''}"
+                    )
             failures = []
             expected_client_names = {names[agent_id] for agent_id in client_ids}
             if args.packet_loss_percent is None:

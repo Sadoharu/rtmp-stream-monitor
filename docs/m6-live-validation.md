@@ -157,6 +157,10 @@ A 10% run recorded 53 qdisc drops and nine positive `SERVER_EGRESS` buckets aver
 
 A repeat at 20% recorded 240 qdisc drops and nine positive `SERVER_EGRESS` buckets averaging `1.013 Mbps`. It emitted only `PTS_REGRESSION` / `AV_TIMESTAMP_DRIFT`, not `NETWORK_PATH_PROBLEM`; both clients stayed connected and supplied fresh measured telemetry after recovery. Together with the 211-drop run that did localize a 5.731 s media lag, this leaves the 20% diagnosis inconsistent across runs.
 
+Two further 20% repeats recorded 271 and 256 qdisc drops. `SERVER_EGRESS` remained healthy (eight buckets averaging `0.985 Mbps` and nine averaging `1.010 Mbps`); both clients stayed connected and recovered fresh telemetry. Neither run emitted `NETWORK_PATH_PROBLEM`; they showed timestamp symptoms around recovery only. In these interactive Windows runs, receiver EStats returned `PERMISSION_DENIED` with zero matching flows. That means per-flow transport evidence was unavailable, not that the RTMP flow had zero retransmissions. The lower-loss result remains inconsistent and inconclusive.
+
+A further 50% run recorded 120 qdisc drops and eight positive `SERVER_EGRESS` buckets averaging `1.048 Mbps`. It emitted `NETWORK_PATH_PROBLEM` on the two LIGHT clients with a measured `10.771 s` media PTS lag and also recorded keyframe-gap / stale-progress symptoms before recovery. The event remained `UNCONFIRMED`: the application observed downstream media lag while egress was healthy, but did not observe the injected loss directly. Interactive Windows EStats again returned `PERMISSION_DENIED`. Review of the correlated `CLIENT_PROBLEM` row found that its old probable-location text implied clear network counters; this has been corrected to say flow-level network evidence is unavailable when the current per-flow sample cannot be read. The detailed explanation already treated the permission error as unknown rather than zero.
+
 Reproduce with:
 
 ```powershell
