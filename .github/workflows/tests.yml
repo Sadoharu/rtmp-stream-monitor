@@ -75,6 +75,21 @@ jobs:
         shell: bash
         run: bash scripts/docker-restore-smoke.sh
 
+  legacy-central-rollback:
+    name: Pre-V2 central rollback compatibility
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install server and API test dependencies
+        run: python -m pip install -e ".[test]"
+      - name: Run pre-V2 rollback compatibility smoke
+        run: python scripts/legacy-rollback-compat-smoke.py
+
   windows-bundled-installer:
     name: Windows bundled service install / uninstall
     runs-on: windows-latest
