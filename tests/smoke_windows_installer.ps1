@@ -57,7 +57,24 @@ $expectedFfprobePath = Join-Path $testBin 'ffprobe.exe'
 $rtmpListener = $null
 $rtmpAcceptTask = $null
 $rtmpClient = $null
+$rtmpStream = $null
 $rtmpPort = 1935
+
+function Read-ExactTcpBytes {
+    param(
+        [Parameter(Mandatory = $true)][System.IO.Stream]$Stream,
+        [Parameter(Mandatory = $true)][int]$Count
+    )
+
+    $buffer = [byte[]]::new($Count)
+    $offset = 0
+    while ($offset -lt $Count) {
+        $read = $Stream.Read($buffer, $offset, $Count - $offset)
+        if ($read -le 0) { throw "RTMP client closed its TCP connection after $offset of $Count handshake bytes." }
+        $offset += $read
+    }
+    return ,$buffer
+}
 
 try {
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
@@ -195,6 +212,27 @@ log_dir: '$logDirYaml'
         if (-not $rtmpClient.Connected) {
             throw 'The LocalSystem ffprobe TCP connection was not established.'
         }
+
+        # Complete the RTMP simple handshake so ffprobe leaves its TCP flow open
+        # while the service collects more than one receiver EStats interval.
+        $rtmpStream = $rtmpClient.GetStream()
+        $rtmpStream.ReadTimeout = 10000
+        $clientHandshake = Read-ExactTcpBytes -Stream $rtmpStream -Count 1537
+        if ($clientHandshake[0] -ne 3) {
+            throw "Unsupported RTMP client version $($clientHandshake[0]); expected version 3."
+        }
+        $serverHandshake = [byte[]]::new(3073)
+        $serverHandshake[0] = 3
+        $serverTimestamp = [System.Net.IPAddress]::HostToNetworkOrder([int][DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
+        [Array]::Copy([BitConverter]::GetBytes($serverTimestamp), 0, $serverHandshake, 1, 4)
+        $serverRandom = [byte[]]::new(1528)
+        $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+        try { $rng.GetBytes($serverRandom) } finally { $rng.Dispose() }
+        [Array]::Copy($serverRandom, 0, $serverHandshake, 9, $serverRandom.Length)
+        [Array]::Copy($clientHandshake, 1, $serverHandshake, 1537, 1536)
+        $rtmpStream.Write($serverHandshake, 0, $serverHandshake.Length)
+        $rtmpStream.Flush()
+        $null = Read-ExactTcpBytes -Stream $rtmpStream -Count 1536
 
         $queuePath = Join-Path $stateDir 'agent_queue.db'
         $queryOutbox = @'
@@ -337,6 +375,7 @@ print(json.dumps(measured or {"status": "NOT_AVAILABLE", "samples": samples[:10]
             & sc.exe delete $serviceName | Out-Null
         }
     }
+    if ($rtmpStream) { $rtmpStream.Dispose() }
     if ($rtmpClient) { $rtmpClient.Dispose() }
     if ($rtmpListener) { $rtmpListener.Stop() }
     if ($programDirWasAbsent -and (Test-Path -LiteralPath $programDir)) {
